@@ -35,6 +35,13 @@ class OandaClient:
                 detail = exc.read().decode("utf-8")
             except Exception:
                 detail = str(exc)
+            try:
+                parsed = json.loads(detail)
+                rejection = parsed.get("orderRejectTransaction", {}) if isinstance(parsed, dict) else {}
+                if isinstance(rejection, dict) and rejection.get("rejectReason"):
+                    detail = str(rejection["rejectReason"])
+            except json.JSONDecodeError:
+                pass
             raise RuntimeError(f"OANDA request failed: {exc.code} {detail}") from exc
         except URLError as exc:
             raise RuntimeError(f"OANDA request failed: {exc}") from exc
