@@ -11,6 +11,9 @@ from commoditiesbot.strategies import generate_signal
 from commoditiesbot.telegram import TelegramNotifier
 
 
+LAST_HEARTBEAT_AT_KEY = "last_telegram_heartbeat_at"
+
+
 def _side_label(side: str) -> str:
     return "🟢 LONG" if side.upper() == "LONG" else "🔴 SHORT"
 
@@ -73,6 +76,16 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     return "\n".join(lines)
 
 
+def _should_send_heartbeat(state: dict[str, object], now_ts: float, heartbeat_seconds: int) -> bool:
+    try:
+        last_sent = float(state.get(LAST_HEARTBEAT_AT_KEY, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        last_sent = 0.0
+    if last_sent <= 0.0:
+        return True
+    return now_ts - last_sent >= max(0, heartbeat_seconds)
+
+
 def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
     instrument_count = 0
@@ -129,12 +142,15 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
             for signal in signals[:5]
         ],
     }
-    state["last_snapshot"] = snapshot
-    state_store.save(state)
-
     message = _format_scan_message(snapshot, config)
-    print(message)
-    notifier.send(message)
+    print(message, flush=True)
+    state["last_snapshot"] = snapshot
+    now_ts = time.time()
+    if _should_send_heartbeat(state, now_ts, config.heartbeat_seconds):
+        state[LAST_HEARTBEAT_AT_KEY] = now_ts
+        state["last_telegram_heartbeat_time"] = snapshot["time"]
+        notifier.send(message)
+    state_store.save(state)
     return snapshot
 
 

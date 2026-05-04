@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from commoditiesbot.config import CommodityConfig
-from commoditiesbot.runtime import _format_scan_message
+from commoditiesbot.runtime import _format_scan_message, _should_send_heartbeat
 
 
 class RuntimeMessageTests(unittest.TestCase):
@@ -33,6 +33,11 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertIn("⚠️ Fallbacks", message)
         self.assertIn("🟢 LONG BRENT", message)
         self.assertIn("📡 OANDA | BCO_USD", message)
+
+    def test_heartbeat_gate_limits_routine_telegram_messages(self) -> None:
+        self.assertTrue(_should_send_heartbeat({}, 1000.0, 3600))
+        self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 3600))
+        self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 4600.0, 3600))
 
 
 if __name__ == "__main__":

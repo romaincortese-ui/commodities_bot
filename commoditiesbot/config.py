@@ -122,6 +122,7 @@ class CommodityConfig:
     strategies: tuple[str, ...]
     oanda_instruments: dict[str, str]
     scan_interval_seconds: int
+    heartbeat_seconds: int
     max_open_positions: int
     max_total_risk_pct: float
     energy_bucket_risk_pct: float
@@ -156,7 +157,8 @@ class CommodityConfig:
                 symbol: os.environ.get(f"OANDA_INSTRUMENT_{symbol}", OANDA_INSTRUMENTS.get(symbol, "")).strip().upper()
                 for symbol in DEFAULT_UNIVERSE
             },
-            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 3600),
+            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
+            heartbeat_seconds=_int("COMMODITIES_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 3600)),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_total_risk_pct=_float("MAX_TOTAL_RISK_PCT", 0.030),
             energy_bucket_risk_pct=_float("ENERGY_BUCKET_RISK_PCT", 0.0125),
