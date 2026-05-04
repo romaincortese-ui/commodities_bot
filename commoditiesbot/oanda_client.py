@@ -30,7 +30,13 @@ class OandaClient:
         try:
             with urlopen(request, timeout=20) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError) as exc:
+        except HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8")
+            except Exception:
+                detail = str(exc)
+            raise RuntimeError(f"OANDA request failed: {exc.code} {detail}") from exc
+        except URLError as exc:
             raise RuntimeError(f"OANDA request failed: {exc}") from exc
 
     def tradeable_instruments(self) -> list[str]:

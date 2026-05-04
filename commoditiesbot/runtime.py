@@ -45,6 +45,16 @@ def _execution_label(config: CommodityConfig) -> str:
     return "signals only"
 
 
+def _format_live_issue(row: dict[str, object]) -> str:
+    subject = row.get("symbol") or row.get("instrument") or "unknown"
+    stage = row.get("stage") or "live"
+    detail = row.get("reason") or row.get("error") or "blocked"
+    text = str(detail)
+    if len(text) > 160:
+        text = text[:157] + "..."
+    return f"{subject} | {stage}: {text}"
+
+
 def _coerce_time(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
@@ -258,6 +268,9 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
         lines.append(f"⚠️ Live order issue(s): {len(live_errors)}")
+        for row in live_errors[:2]:
+            if isinstance(row, dict):
+                lines.append(f"   ↳ {_format_live_issue(row)}")
 
     return "\n".join(lines)
 
