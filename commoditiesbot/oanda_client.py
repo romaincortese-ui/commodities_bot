@@ -13,6 +13,7 @@ from commoditiesbot.models import Candle
 class OandaClient:
     def __init__(self, config: CommodityConfig) -> None:
         self.config = config
+        self._instrument_details_cache: dict[str, dict[str, int]] | None = None
 
     def _request(self, method: str, path: str, payload: dict[str, object] | None = None) -> dict[str, object]:
         if not self.config.has_oanda_credentials:
@@ -47,11 +48,35 @@ class OandaClient:
             raise RuntimeError(f"OANDA request failed: {exc}") from exc
 
     def tradeable_instruments(self) -> list[str]:
+        return list(self._instrument_details().keys())
+
+    def _instrument_details(self) -> dict[str, dict[str, int]]:
+        if self._instrument_details_cache is not None:
+            return self._instrument_details_cache
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/instruments")
         instruments = payload.get("instruments", [])
+        details: dict[str, dict[str, int]] = {}
         if not isinstance(instruments, list):
-            return []
-        return [str(item.get("name")) for item in instruments if isinstance(item, dict) and item.get("name")]
+            self._instrument_details_cache = details
+            return details
+        for item in instruments:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            name = str(item["name"]).upper()
+            details[name] = {
+                "displayPrecision": _int_or_default(item.get("displayPrecision"), 5),
+                "tradeUnitsPrecision": _int_or_default(item.get("tradeUnitsPrecision"), 0),
+            }
+        self._instrument_details_cache = details
+        return details
+
+    def _price_precision(self, instrument: str) -> int:
+        details = self._instrument_details().get(instrument.upper(), {})
+        return details.get("displayPrecision", 5)
+
+    def _units_precision(self, instrument: str) -> int:
+        details = self._instrument_details().get(instrument.upper(), {})
+        return details.get("tradeUnitsPrecision", 0)
 
     def account_nav(self) -> float:
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/summary")
@@ -125,23 +150,41 @@ class OandaClient:
     ) -> dict[str, object]:
         if self.config.paper_trade:
             return {"paper": True, "instrument": instrument, "units": units, "time": datetime.now(timezone.utc).isoformat()}
+        price_precision = self._price_precision(instrument)
         order = {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(round(units, 4)),
+            "units": _format_units(units, self._units_precision(instrument)),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
             "clientExtensions": {"tag": tag},
         }
         if stop_loss is not None and stop_loss > 0:
-            order["stopLossOnFill"] = {"price": _format_price(stop_loss)}
+            order["stopLossOnFill"] = {"price": _format_price(stop_loss, price_precision)}
         if take_profit is not None and take_profit > 0:
-            order["takeProfitOnFill"] = {"price": _format_price(take_profit)}
+            order["takeProfitOnFill"] = {"price": _format_price(take_profit, price_precision)}
         payload = {
             "order": order
         }
         return self._request("POST", f"/v3/accounts/{self.config.oanda_account_id}/orders", payload)
 
 
-def _format_price(value: float) -> str:
-    return f"{value:.8f}".rstrip("0").rstrip(".")
+def _int_or_default(value: object, default: int) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_units(value: float, precision: int) -> str:
+    digits = max(0, min(8, precision))
+    if digits == 0:
+        return str(int(round(value)))
+    return f"{value:.{digits}f}".rstrip("0").rstrip(".")
+
+
+def _format_price(value: float, precision: int) -> str:
+    digits = max(0, min(8, precision))
+    if digits == 0:
+        return str(int(round(value)))
+    return f"{value:.{digits}f}".rstrip("0").rstrip(".")
