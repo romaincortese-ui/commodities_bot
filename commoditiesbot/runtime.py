@@ -21,11 +21,30 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
             instrument_count = 0
 
     provider = FixtureMarketDataProvider(days=max(90, config.backtest_days + 45))
+    data_provider_counts = {"oanda": 0, "fixture": 0}
+    oanda_failures: list[str] = []
     signals = []
     for symbol in config.universe:
-        candles = provider.history(symbol)
+        candles = []
+        data_provider = "fixture"
+        oanda_instrument = config.oanda_instrument_for(symbol)
+        if config.has_oanda_credentials and oanda_instrument:
+            try:
+                candles = client.candles(oanda_instrument, count=max(90, config.backtest_days + 45), granularity="D")
+            except RuntimeError as exc:
+                oanda_failures.append(f"{symbol}:{exc}")
+            if len(candles) >= 45:
+                data_provider = "oanda"
+            else:
+                candles = []
+        if not candles:
+            candles = provider.history(symbol)
+        data_provider_counts[data_provider] += 1
         signal = generate_signal(symbol, candles, config)
         if signal is not None:
+            signal.metadata["data_provider"] = data_provider
+            if oanda_instrument:
+                signal.metadata["oanda_instrument"] = oanda_instrument
             signals.append(signal)
 
     signals.sort(key=lambda item: item.score, reverse=True)
@@ -34,8 +53,16 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "paper_trade": config.paper_trade,
         "configured_symbols": list(config.universe),
         "oanda_instrument_count": instrument_count,
+        "data_provider_counts": data_provider_counts,
+        "oanda_failures": oanda_failures[:5],
         "top_signals": [
-            {"symbol": signal.symbol, "side": signal.side, "score": round(signal.score, 2), "strategy": signal.strategy}
+            {
+                "symbol": signal.symbol,
+                "side": signal.side,
+                "score": round(signal.score, 2),
+                "strategy": signal.strategy,
+                "data_provider": signal.metadata.get("data_provider", "fixture"),
+            }
             for signal in signals[:5]
         ],
     }

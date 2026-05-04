@@ -32,6 +32,8 @@ Copy `.env.example` into Railway variables. The operator only needs to fill:
 
 Optional data keys can be added later for richer event/weather inputs: `EIA_API_KEY`, `USDA_NASS_API_KEY`, `NOAA_CDO_TOKEN`, `FRED_API_KEY`.
 
+The runtime uses OANDA daily candles when credentials are present for mapped symbols (`WTICO_USD`, `BCO_USD`, `NATGAS_USD`, grains, and softs). `GASOLINE` and `HEATING_OIL` stay on fixture data unless the operator sets `OANDA_INSTRUMENT_GASOLINE` and `OANDA_INSTRUMENT_HEATING_OIL` to tradeable OANDA instruments for the account.
+
 ## Deployment
 
 `railway.toml` uses the same pattern as the live bots:

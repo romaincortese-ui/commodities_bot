@@ -53,6 +53,19 @@ YAHOO_SYMBOLS = {
     "COTTON": "CT=F",
 }
 
+OANDA_INSTRUMENTS = {
+    "WTI": "WTICO_USD",
+    "BRENT": "BCO_USD",
+    "NATGAS": "NATGAS_USD",
+    "CORN": "CORN_USD",
+    "WHEAT": "WHEAT_USD",
+    "SOYBEANS": "SOYBN_USD",
+    "SUGAR": "SUGAR_USD",
+    "COFFEE": "COFFEE_USD",
+    "COCOA": "COCOA_USD",
+    "COTTON": "COTTON_USD",
+}
+
 BASE_PRICES = {
     "WTI": 78.0,
     "BRENT": 82.0,
@@ -107,6 +120,7 @@ class CommodityConfig:
     state_file: Path
     universe: tuple[str, ...]
     strategies: tuple[str, ...]
+    oanda_instruments: dict[str, str]
     scan_interval_seconds: int
     max_open_positions: int
     max_total_risk_pct: float
@@ -138,6 +152,10 @@ class CommodityConfig:
             state_file=Path(os.environ.get("COMMODITIES_STATE_FILE", "runtime_state.json")),
             universe=_csv("COMMODITIES_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("COMMODITIES_STRATEGIES", DEFAULT_STRATEGIES),
+            oanda_instruments={
+                symbol: os.environ.get(f"OANDA_INSTRUMENT_{symbol}", OANDA_INSTRUMENTS.get(symbol, "")).strip().upper()
+                for symbol in DEFAULT_UNIVERSE
+            },
             scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_total_risk_pct=_float("MAX_TOTAL_RISK_PCT", 0.030),
@@ -169,6 +187,9 @@ class CommodityConfig:
     @property
     def has_oanda_credentials(self) -> bool:
         return bool(self.oanda_account_id and self.oanda_api_token)
+
+    def oanda_instrument_for(self, symbol: str) -> str:
+        return self.oanda_instruments.get(symbol.upper(), "")
 
     def bucket_cap(self, bucket: str) -> float:
         if bucket == "ENERGY":
