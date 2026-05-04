@@ -117,6 +117,7 @@ class CommodityConfig:
     oanda_account_id: str
     oanda_api_token: str
     paper_trade: bool
+    live_trading_enabled: bool
     state_file: Path
     universe: tuple[str, ...]
     strategies: tuple[str, ...]
@@ -124,6 +125,7 @@ class CommodityConfig:
     scan_interval_seconds: int
     heartbeat_seconds: int
     max_open_positions: int
+    max_live_orders_per_scan: int
     max_total_risk_pct: float
     energy_bucket_risk_pct: float
     grains_bucket_risk_pct: float
@@ -145,11 +147,13 @@ class CommodityConfig:
 
     @classmethod
     def from_env(cls) -> "CommodityConfig":
+        paper_trade = _bool("PAPER_TRADE", True)
         return cls(
             oanda_env=os.environ.get("OANDA_ENV", "practice").strip().lower(),
             oanda_account_id=os.environ.get("OANDA_ACCOUNT_ID", "").strip(),
             oanda_api_token=os.environ.get("OANDA_API_TOKEN", "").strip(),
-            paper_trade=_bool("PAPER_TRADE", True),
+            paper_trade=paper_trade,
+            live_trading_enabled=_bool("LIVE_TRADING_ENABLED", not paper_trade),
             state_file=Path(os.environ.get("COMMODITIES_STATE_FILE", "runtime_state.json")),
             universe=_csv("COMMODITIES_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("COMMODITIES_STRATEGIES", DEFAULT_STRATEGIES),
@@ -160,6 +164,7 @@ class CommodityConfig:
             scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
             heartbeat_seconds=_int("COMMODITIES_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 3600)),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
+            max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),
             max_total_risk_pct=_float("MAX_TOTAL_RISK_PCT", 0.030),
             energy_bucket_risk_pct=_float("ENERGY_BUCKET_RISK_PCT", 0.0125),
             grains_bucket_risk_pct=_float("GRAINS_BUCKET_RISK_PCT", 0.0100),
