@@ -1,0 +1,60 @@
+# Commodities Bot
+
+Natural-commodities trading bot scaffold for an OANDA sub-account. The first build is paper-first and operator-ready: it can deploy to Railway without secrets, run deterministic 30-day validation backtests, and switch to OANDA practice/live execution once the operator adds OANDA and Telegram credentials.
+
+## What It Trades
+
+The configured universe is intentionally focused on natural commodities:
+
+- Energy: `WTI`, `BRENT`, `NATGAS`, `GASOLINE`, `HEATING_OIL`
+- Grains/oilseeds: `CORN`, `WHEAT`, `SOYBEANS`
+- Softs: `SUGAR`, `COFFEE`, `COCOA`, `COTTON`
+
+Every symbol routes through a commodity-specific strategy sleeve. Energy trades inventory/weather/trend confirmation, grains trade crop-stage/weather trend confirmation, and softs trade higher-timeframe weather/supply trend continuation. The MVP uses deterministic event/weather proxy fields until live data keys are added.
+
+## Quick Start
+
+```bash
+python -m commoditiesbot.backtest.run_backtest
+python bot.py
+```
+
+The runtime stays in paper mode unless `PAPER_TRADE=false` and valid OANDA credentials are present.
+
+## Railway Variables
+
+Copy `.env.example` into Railway variables. The operator only needs to fill:
+
+- `OANDA_ACCOUNT_ID`
+- `OANDA_API_TOKEN`
+- `TELEGRAM_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+Optional data keys can be added later for richer event/weather inputs: `EIA_API_KEY`, `USDA_NASS_API_KEY`, `NOAA_CDO_TOKEN`, `FRED_API_KEY`.
+
+## Deployment
+
+`railway.toml` uses the same pattern as the live bots:
+
+```toml
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python bot.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+```
+
+Mount a Railway volume at `/data` before live trading so runtime state survives restarts.
+
+## Backtest Standard
+
+The default 30-day validation backtest uses built-in deterministic fixture data because broker credentials are not available during CI/deployment setup. The backtest report clearly records `data_provider=fixture`. Once OANDA credentials are configured, the data provider can be extended to pull broker candles for the same engine.
+
+Live go/no-go should require:
+
+- positive 30-day PnL after costs
+- no open-risk cap violations
+- no single bucket dominating PnL
+- 30 calendar days of paper trading with OANDA practice credentials
