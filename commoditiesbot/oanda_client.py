@@ -111,6 +111,27 @@ class OandaClient:
                 open_instruments.add(instrument)
         return open_instruments
 
+    def instrument_tradeable(self, instrument: str) -> tuple[bool, str]:
+        params = urlencode({"instruments": instrument, "includeHomeConversions": "false"})
+        payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/pricing?{params}")
+        prices = payload.get("prices", [])
+        if not isinstance(prices, list):
+            return False, "pricing_unavailable"
+        price = next((item for item in prices if isinstance(item, dict) and str(item.get("instrument") or "").upper() == instrument.upper()), None)
+        if not isinstance(price, dict):
+            return False, "pricing_unavailable"
+        status = str(price.get("status") or "").strip().lower()
+        tradeable = price.get("tradeable")
+        if status and status != "tradeable":
+            return False, f"pricing_status_{status.replace('-', '_')}"
+        if tradeable is False:
+            return False, "pricing_not_tradeable"
+        bids = price.get("bids", [])
+        asks = price.get("asks", [])
+        if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
+            return False, "pricing_missing_bid_ask"
+        return True, status or "tradeable"
+
     def candles(self, instrument: str, count: int = 120, granularity: str = "D") -> list[Candle]:
         params = urlencode({"count": count, "granularity": granularity, "price": "M"})
         payload = self._request("GET", f"/v3/instruments/{instrument}/candles?{params}")

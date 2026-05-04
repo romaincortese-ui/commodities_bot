@@ -175,6 +175,7 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
     positions = [position for position in (_position_from_state(row) for row in rows) if position is not None]
     equity = _account_equity(config, client, state)
     orders: list[dict[str, object]] = []
+    market_statuses: dict[str, tuple[bool, str]] = {}
     for signal in signals:
         if len(orders) >= config.max_live_orders_per_scan:
             break
@@ -184,6 +185,15 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             continue
         instrument = str(signal.metadata.get("oanda_instrument") or config.oanda_instrument_for(signal.symbol)).strip().upper()
         if not instrument or instrument in open_instruments:
+            continue
+        if instrument not in market_statuses:
+            try:
+                market_statuses[instrument] = client.instrument_tradeable(instrument)
+            except RuntimeError as exc:
+                market_statuses[instrument] = (False, str(exc))
+        market_open, market_reason = market_statuses[instrument]
+        if not market_open:
+            errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "market", "reason": market_reason})
             continue
         allowed, reason = can_open(signal, positions, equity, config)
         if not allowed:
@@ -358,7 +368,13 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     print(message, flush=True)
     state["last_snapshot"] = snapshot
     now_ts = time.time()
-    if _should_send_heartbeat(state, now_ts, config.heartbeat_seconds):
+    heartbeat_due = _should_send_heartbeat(state, now_ts, config.heartbeat_seconds)
+    if live_orders:
+        notifier.send(message)
+        if heartbeat_due:
+            state[LAST_HEARTBEAT_AT_KEY] = now_ts
+            state["last_telegram_heartbeat_time"] = snapshot["time"]
+    elif heartbeat_due:
         state[LAST_HEARTBEAT_AT_KEY] = now_ts
         state["last_telegram_heartbeat_time"] = snapshot["time"]
         notifier.send(message)
