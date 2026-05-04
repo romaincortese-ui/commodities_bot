@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def _csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(name)
     if not raw:
         return default
-    values = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    values = tuple(part.strip().upper() for part in re.split(r"[,\s]+", raw) if part.strip())
     return values or default
 
 
@@ -125,6 +126,7 @@ class CommodityConfig:
     usda_nass_api_key: str
     noaa_cdo_token: str
     fred_api_key: str
+    run_once: bool
 
     @classmethod
     def from_env(cls) -> "CommodityConfig":
@@ -155,6 +157,7 @@ class CommodityConfig:
             usda_nass_api_key=os.environ.get("USDA_NASS_API_KEY", "").strip(),
             noaa_cdo_token=os.environ.get("NOAA_CDO_TOKEN", "").strip(),
             fred_api_key=os.environ.get("FRED_API_KEY", "").strip(),
+            run_once=_bool("RUN_ONCE", False),
         )
 
     @property

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from commoditiesbot.backtest.data import FixtureMarketDataProvider
@@ -10,16 +11,8 @@ from commoditiesbot.strategies import generate_signal
 from commoditiesbot.telegram import TelegramNotifier
 
 
-def run_bot() -> None:
-    config = CommodityConfig.from_env()
-    notifier = TelegramNotifier(config.telegram_token, config.telegram_chat_id)
-    state_store = StateStore(config.state_file)
+def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
-    client = OandaClient(config)
-
-    if not config.paper_trade and not config.has_oanda_credentials:
-        raise RuntimeError("Live trading requested but OANDA_ACCOUNT_ID/OANDA_API_TOKEN are missing")
-
     instrument_count = 0
     if config.has_oanda_credentials:
         try:
@@ -54,3 +47,20 @@ def run_bot() -> None:
     )
     print(message)
     notifier.send(message)
+    return snapshot
+
+
+def run_bot() -> None:
+    config = CommodityConfig.from_env()
+    notifier = TelegramNotifier(config.telegram_token, config.telegram_chat_id)
+    state_store = StateStore(config.state_file)
+    client = OandaClient(config)
+
+    if not config.paper_trade and not config.has_oanda_credentials:
+        raise RuntimeError("Live trading requested but OANDA_ACCOUNT_ID/OANDA_API_TOKEN are missing")
+
+    while True:
+        run_scan(config, client, state_store, notifier)
+        if config.run_once:
+            return
+        time.sleep(max(30, config.scan_interval_seconds))
