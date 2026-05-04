@@ -11,6 +11,68 @@ from commoditiesbot.strategies import generate_signal
 from commoditiesbot.telegram import TelegramNotifier
 
 
+def _side_label(side: str) -> str:
+    return "🟢 LONG" if side.upper() == "LONG" else "🔴 SHORT"
+
+
+def _provider_label(provider: str) -> str:
+    return "📡 OANDA" if provider == "oanda" else "🧪 Fixture"
+
+
+def _pretty_strategy(strategy: str) -> str:
+    return strategy.replace("_", " ").title()
+
+
+def _format_time(value: object) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -> str:
+    counts = snapshot.get("data_provider_counts", {})
+    oanda_count = int(counts.get("oanda", 0)) if isinstance(counts, dict) else 0
+    fixture_count = int(counts.get("fixture", 0)) if isinstance(counts, dict) else 0
+    total_count = max(oanda_count + fixture_count, len(config.universe))
+    failures = snapshot.get("oanda_failures", [])
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    execution = "signals only" if not config.paper_trade else "paper signals"
+    mode_icon = "🔴" if not config.paper_trade else "🧪"
+    mode_text = "LIVE config" if not config.paper_trade else "PAPER"
+
+    lines = [
+        "🌾 Commodities Bot",
+        f"{mode_icon} Mode: {mode_text} | Execution: {execution}",
+        f"🕒 Scan: {_format_time(snapshot.get('time', ''))}",
+        f"📊 Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count} | Instruments {snapshot.get('oanda_instrument_count', 0)}",
+    ]
+    if failure_count:
+        failed_symbols = ", ".join(str(item).split(":", 1)[0] for item in failures[:3]) if isinstance(failures, list) else "some symbols"
+        suffix = "" if failure_count <= 3 else f" +{failure_count - 3} more"
+        lines.append(f"⚠️ Fallbacks: {failure_count} OANDA fetch issue(s): {failed_symbols}{suffix}")
+
+    top_signals = snapshot.get("top_signals", [])
+    if isinstance(top_signals, list) and top_signals:
+        lines.append("")
+        lines.append("🏆 Top Signals")
+        for index, row in enumerate(top_signals[:5], start=1):
+            if not isinstance(row, dict):
+                continue
+            provider = str(row.get("data_provider", "fixture"))
+            instrument = row.get("oanda_instrument")
+            instrument_text = f" | {instrument}" if provider == "oanda" and instrument else ""
+            lines.append(
+                f"{index}. {_side_label(str(row.get('side', '')))} {row.get('symbol', '?')} | Score {float(row.get('score', 0.0)):.1f} | {_provider_label(provider)}{instrument_text}"
+            )
+            lines.append(f"   ↳ {_pretty_strategy(str(row.get('strategy', '')))}")
+    else:
+        lines.append("😴 No qualified signals this scan.")
+
+    return "\n".join(lines)
+
+
 def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
     instrument_count = 0
@@ -62,6 +124,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
                 "score": round(signal.score, 2),
                 "strategy": signal.strategy,
                 "data_provider": signal.metadata.get("data_provider", "fixture"),
+                "oanda_instrument": signal.metadata.get("oanda_instrument", ""),
             }
             for signal in signals[:5]
         ],
@@ -69,9 +132,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     state["last_snapshot"] = snapshot
     state_store.save(state)
 
-    message = "Commodities bot scan complete\n" + "\n".join(
-        f"{row['symbol']} {row['side']} score={row['score']} {row['strategy']}" for row in snapshot["top_signals"]
-    )
+    message = _format_scan_message(snapshot, config)
     print(message)
     notifier.send(message)
     return snapshot
