@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -34,3 +35,15 @@ class TelegramNotifier:
                 urlopen(url, timeout=10).read()
             except Exception:
                 return
+
+    def get_updates(self, offset: int, timeout: int = 1) -> list[dict[str, object]]:
+        if not self.enabled:
+            return []
+        params = urlencode({"offset": offset, "timeout": timeout})
+        url = f"https://api.telegram.org/bot{self.token}/getUpdates?{params}"
+        try:
+            payload = json.loads(urlopen(url, timeout=max(5, timeout + 3)).read().decode("utf-8"))
+        except Exception:
+            return []
+        result = payload.get("result", []) if isinstance(payload, dict) else []
+        return result if isinstance(result, list) else []
