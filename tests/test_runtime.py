@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from commoditiesbot.config import CommodityConfig
 from commoditiesbot.models import CommoditySignal
-from commoditiesbot.runtime import _execute_live_orders, _format_scan_message, _send_trade_lifecycle_alerts, _should_send_heartbeat
+from commoditiesbot.runtime import _execute_live_orders, _format_boot_message, _format_scan_message, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
@@ -97,6 +97,25 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertTrue(_should_send_heartbeat({}, 1000.0, 3600))
         self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 3600))
         self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 4600.0, 3600))
+
+    def test_boot_message_confirms_activation(self) -> None:
+        config = replace(
+            CommodityConfig.from_env(),
+            paper_trade=False,
+            live_trading_enabled=True,
+            universe=("WTI", "BRENT"),
+            scan_interval_seconds=300,
+            heartbeat_seconds=3600,
+        )
+        state = {"open_positions": [{"instrument": "WTICO_USD"}]}
+
+        message = _format_boot_message(config, state, datetime(2026, 5, 5, 19, 0, tzinfo=timezone.utc))
+
+        self.assertIn("<b>Commodities Bot Boot</b>", message)
+        self.assertIn("Mode: 🔴 LIVE config | Execution: live orders", message)
+        self.assertIn("Universe: 2 symbols", message)
+        self.assertIn("Open positions from state: 1", message)
+        self.assertIn("Started: 2026-05-05 19:00 UTC", message)
 
     def test_live_config_executes_oanda_signal_with_brackets(self) -> None:
         config = _live_config()

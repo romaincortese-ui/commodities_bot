@@ -79,6 +79,24 @@ def _execution_label(config: CommodityConfig) -> str:
     return "signals only"
 
 
+def _format_boot_message(config: CommodityConfig, state: dict[str, Any], started_at: datetime | None = None) -> str:
+    mode_icon = "🔴" if not config.paper_trade else "🧪"
+    mode_text = "LIVE config" if not config.paper_trade else "PAPER"
+    started = started_at or datetime.now(timezone.utc)
+    open_count = len(_state_position_rows(state))
+    return "\n".join(
+        [
+            "🚀 <b>Commodities Bot Boot</b>",
+            "━━━━━━━━━━━━━━━",
+            f"Mode: {mode_icon} {mode_text} | Execution: {_execution_label(config)}",
+            f"Universe: {len(config.universe)} symbols",
+            f"Open positions from state: {open_count}",
+            f"Scan interval: {max(30, config.scan_interval_seconds)}s | Heartbeat: {config.heartbeat_seconds}s",
+            f"Started: {_format_time(started)}",
+        ]
+    )
+
+
 def _format_live_issue(row: dict[str, object]) -> str:
     subject = row.get("symbol") or row.get("instrument") or "unknown"
     stage = row.get("stage") or "live"
@@ -502,6 +520,9 @@ def run_bot() -> None:
 
     if not config.paper_trade and not config.has_oanda_credentials:
         raise RuntimeError("Live trading requested but OANDA_ACCOUNT_ID/OANDA_API_TOKEN are missing")
+
+    boot_state = state_store.load()
+    notifier.send(_format_boot_message(config, boot_state), parse_mode="HTML")
 
     while True:
         run_scan(config, client, state_store, notifier)
