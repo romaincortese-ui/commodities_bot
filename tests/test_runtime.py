@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from commoditiesbot.config import CommodityConfig
 from commoditiesbot.models import CommoditySignal
-from commoditiesbot.runtime import _execute_live_orders, _format_scan_message, _should_send_heartbeat
+from commoditiesbot.runtime import _execute_live_orders, _format_scan_message, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
@@ -25,7 +25,15 @@ class FakeOandaClient:
 
     def place_market_order(self, instrument: str, units: float, tag: str, *, stop_loss: float | None = None, take_profit: float | None = None) -> dict[str, object]:
         self.orders.append({"instrument": instrument, "units": units, "tag": tag, "stop_loss": stop_loss, "take_profit": take_profit})
-        return {"orderFillTransaction": {"id": "order-1"}}
+        return {"orderFillTransaction": {"id": "fill-1", "price": "80.125", "tradeOpened": {"tradeID": "trade-1"}}}
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str | None]] = []
+
+    def send(self, message: str, parse_mode: str | None = None) -> None:
+        self.messages.append((message, parse_mode))
 
 
 def _live_config() -> CommodityConfig:
@@ -104,7 +112,65 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertGreater(client.orders[0]["units"], 0)
         self.assertEqual(client.orders[0]["stop_loss"], 78.0)
         self.assertEqual(client.orders[0]["take_profit"], 84.0)
-        self.assertEqual(state["open_positions"][0]["order_id"], "order-1")
+        self.assertEqual(state["open_positions"][0]["order_id"], "trade-1")
+        self.assertEqual(state["open_positions"][0]["entry_price"], 80.125)
+
+    def test_live_order_alert_matches_forex_lifecycle_style(self) -> None:
+        config = _live_config()
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        notifier = FakeNotifier()
+
+        orders, errors = _execute_live_orders([signal], config, client, state)
+        _send_trade_lifecycle_alerts(notifier, orders, [])
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(notifier.messages), 1)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("<b>Crude Inventory Trend LONG</b> | WTI", message)
+        self.assertIn("Entry: 80.12500", message)
+        self.assertIn("TP: 84.00000", message)
+        self.assertIn("SL: 78.00000", message)
+        self.assertIn("Order: trade-1", message)
+
+    def test_closed_oanda_position_generates_broker_close_alert(self) -> None:
+        config = _live_config()
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "WTI",
+                    "instrument": "WTICO_USD",
+                    "side": "LONG",
+                    "strategy": "CRUDE_INVENTORY_TREND",
+                    "entry_price": 80.0,
+                    "units": 12.5,
+                    "sl_price": 78.0,
+                    "tp_price": 84.0,
+                    "opened_at": "2026-05-04T17:00:00+00:00",
+                    "risk_amount": 35.0,
+                    "bucket": "ENERGY",
+                    "order_id": "trade-1",
+                    "metadata": {},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+        notifier = FakeNotifier()
+
+        orders, errors = _execute_live_orders([], config, client, state)
+        _send_trade_lifecycle_alerts(notifier, orders, state["last_closed_positions"])
+
+        self.assertEqual(orders, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(state["open_positions"], [])
+        self.assertEqual(len(notifier.messages), 1)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("<b>Crude Inventory Trend Closed at broker</b> | WTI", message)
+        self.assertIn("Exit: broker reported closed", message)
+        self.assertIn("Reason: OANDA position no longer open", message)
 
     def test_live_config_skips_order_when_oanda_market_is_not_tradeable(self) -> None:
         config = _live_config()
