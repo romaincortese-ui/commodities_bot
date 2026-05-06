@@ -156,6 +156,29 @@ def _fill_price(response: dict[str, object]) -> float | None:
     return _float_or_none(fill.get("price"))
 
 
+def _order_cancel_reason(response: dict[str, object]) -> str:
+    cancel = response.get("orderCancelTransaction")
+    if isinstance(cancel, dict):
+        return str(cancel.get("reason") or cancel.get("rejectReason") or "order_not_filled")
+    reject = response.get("orderRejectTransaction")
+    if isinstance(reject, dict):
+        return str(reject.get("rejectReason") or reject.get("reason") or "order_rejected")
+    return "order_not_filled"
+
+
+def _recenter_brackets(position: CommodityPosition, signal: CommoditySignal, bid: float, ask: float) -> None:
+    stop_distance = max(abs(signal.price - signal.sl_price), signal.price * 0.002)
+    target_distance = max(abs(signal.tp_price - signal.price), stop_distance)
+    if signal.side == "LONG":
+        position.entry_price = ask
+        position.sl_price = max(0.00001, ask - stop_distance)
+        position.tp_price = ask + target_distance
+    else:
+        position.entry_price = bid
+        position.sl_price = bid + stop_distance
+        position.tp_price = max(0.00001, bid - target_distance)
+
+
 def _json_safe(value: object) -> object:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -336,6 +359,12 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
         position = position_from_signal(signal, equity, config)
         if position.units <= 0:
             continue
+        try:
+            bid, ask = client.current_bid_ask(instrument)
+        except RuntimeError as exc:
+            errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "pricing", "error": str(exc)})
+            continue
+        _recenter_brackets(position, signal, bid, ask)
         signed_units = _signed_oanda_units(position.units, signal.side)
         if signed_units == 0:
             errors.append({"symbol": signal.symbol, "stage": "units", "reason": "position_size_below_one_oanda_unit"})
@@ -350,6 +379,9 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             )
         except RuntimeError as exc:
             errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "order", "error": str(exc)})
+            continue
+        if not isinstance(response.get("orderFillTransaction"), dict):
+            errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "order", "reason": _order_cancel_reason(response)})
             continue
         fill_price = _fill_price(response)
         if fill_price is not None:

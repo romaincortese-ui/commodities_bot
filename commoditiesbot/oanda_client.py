@@ -132,6 +132,22 @@ class OandaClient:
             return False, "pricing_missing_bid_ask"
         return True, status or "tradeable"
 
+    def current_bid_ask(self, instrument: str) -> tuple[float, float]:
+        params = urlencode({"instruments": instrument, "includeHomeConversions": "false"})
+        payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/pricing?{params}")
+        prices = payload.get("prices", [])
+        if not isinstance(prices, list):
+            raise RuntimeError("pricing_unavailable")
+        price = next((item for item in prices if isinstance(item, dict) and str(item.get("instrument") or "").upper() == instrument.upper()), None)
+        if not isinstance(price, dict):
+            raise RuntimeError("pricing_unavailable")
+        try:
+            bid = float(price["bids"][0]["price"])
+            ask = float(price["asks"][0]["price"])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RuntimeError("pricing_missing_bid_ask") from exc
+        return bid, ask
+
     def candles(self, instrument: str, count: int = 120, granularity: str = "D") -> list[Candle]:
         params = urlencode({"count": count, "granularity": granularity, "price": "M"})
         payload = self._request("GET", f"/v3/instruments/{instrument}/candles?{params}")
