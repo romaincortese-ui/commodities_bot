@@ -57,6 +57,55 @@ def _format_amount(value: object, digits: int = 2) -> str:
     return f"{amount:.{digits}f}"
 
 
+def _format_money(value: object) -> str:
+    amount = _float_or_none(value)
+    if amount is None:
+        return "n/a"
+    sign = "-" if amount < 0 else ""
+    return f"{sign}£{abs(amount):.2f}"
+
+
+def _format_signed_percent(value: object) -> str:
+    amount = _float_or_none(value)
+    if amount is None:
+        return "n/a"
+    sign = "+" if amount >= 0 else ""
+    return f"{sign}{amount:.2f}%"
+
+
+def _position_entry_budget(row: dict[str, object]) -> float | None:
+    for key in ("entry_budget", "initial_margin_required", "margin_used", "risk_amount"):
+        value = _float_or_none(row.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _position_unrealized_pl(row: dict[str, object]) -> float | None:
+    for key in ("unrealized_pl", "unrealizedPL"):
+        value = _float_or_none(row.get(key))
+        if value is not None:
+            return value
+    entry_budget = _position_entry_budget(row)
+    current_value = _float_or_none(row.get("current_value"))
+    if entry_budget is not None and current_value is not None:
+        return current_value - entry_budget
+    if entry_budget is not None:
+        return 0.0
+    return None
+
+
+def _position_current_value(row: dict[str, object]) -> float | None:
+    current_value = _float_or_none(row.get("current_value"))
+    if current_value is not None:
+        return current_value
+    entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    if entry_budget is not None and unrealized_pl is not None:
+        return entry_budget + unrealized_pl
+    return None
+
+
 def _held_minutes(row: dict[str, object], closed_at: datetime | None = None) -> float:
     opened_at = _coerce_time(row.get("opened_at"))
     closed_time = closed_at or datetime.now(timezone.utc)
@@ -287,6 +336,15 @@ def _row_from_oanda_trade(config: CommodityConfig, trade: dict[str, object], exi
     risk_amount = _float_or_none(existing.get("risk_amount"))
     if risk_amount is None and sl_price > 0:
         risk_amount = abs(entry_price - sl_price) * units
+    initial_margin_required = _float_or_none(trade.get("initialMarginRequired"))
+    margin_used = _float_or_none(trade.get("marginUsed"))
+    entry_budget = initial_margin_required
+    if entry_budget is None or entry_budget <= 0:
+        entry_budget = _float_or_none(existing.get("entry_budget")) or margin_used
+    unrealized_pl = _float_or_none(trade.get("unrealizedPL"))
+    if unrealized_pl is None:
+        unrealized_pl = _float_or_none(existing.get("unrealized_pl"))
+    current_value = entry_budget + unrealized_pl if entry_budget is not None and unrealized_pl is not None else _float_or_none(existing.get("current_value"))
     metadata = dict(existing.get("metadata") or {}) if isinstance(existing.get("metadata"), dict) else {}
     metadata["reconciled_from_oanda"] = True
     client_extensions = trade.get("clientExtensions")
@@ -305,6 +363,11 @@ def _row_from_oanda_trade(config: CommodityConfig, trade: dict[str, object], exi
         "tp_price": tp_price,
         "opened_at": _coerce_time(trade.get("openTime")).isoformat(),
         "risk_amount": risk_amount or 0.0,
+        "entry_budget": entry_budget,
+        "initial_margin_required": initial_margin_required,
+        "margin_used": margin_used,
+        "unrealized_pl": unrealized_pl,
+        "current_value": current_value,
         "bucket": SYMBOL_BUCKETS.get(symbol, "OTHER"),
         "order_id": str(trade.get("id") or existing.get("order_id") or "live"),
         "metadata": _json_safe(metadata),
@@ -314,12 +377,16 @@ def _row_from_oanda_trade(config: CommodityConfig, trade: dict[str, object], exi
 def _format_position_lines(row: dict[str, object]) -> list[str]:
     side = str(row.get("side") or "?").upper()
     side_icon = "🟢" if side == "LONG" else "🔴"
+    entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    pnl_pct = (unrealized_pl / entry_budget * 100.0) if entry_budget and unrealized_pl is not None else None
+    current_value = _position_current_value(row)
     return [
         (
-            f"{side_icon} {_html(row.get('symbol') or '?')} {side} | {_html(row.get('instrument') or '?')} | "
-            f"units {_format_amount(row.get('units'), 2)} | entry {_format_price(row.get('entry_price'))}"
+            f"{side_icon} {_html(row.get('symbol') or '?')} {side} | "
+            f"Entry Budget: {_format_money(entry_budget)} | P&L: {_format_signed_percent(pnl_pct)} | "
+            f"Current value: {_format_money(current_value)}"
         ),
-        f"   TP {_format_price(row.get('tp_price'))} | SL {_format_price(row.get('sl_price'))} | opened {_format_time(row.get('opened_at') or '')}",
     ]
 
 
@@ -378,6 +445,9 @@ def _position_row(position: CommodityPosition, instrument: str, signed_units: fl
         "tp_price": position.tp_price,
         "opened_at": position.opened_at.isoformat(),
         "risk_amount": position.risk_amount,
+        "entry_budget": position.risk_amount,
+        "unrealized_pl": 0.0,
+        "current_value": position.risk_amount,
         "bucket": position.bucket,
         "order_id": position.order_id,
         "metadata": _json_safe(position.metadata),
@@ -385,25 +455,10 @@ def _position_row(position: CommodityPosition, instrument: str, signed_units: fl
 
 
 def _format_order_opened_message(row: dict[str, object]) -> str:
-    direction = str(row.get("side") or "?").upper()
-    dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    strategy = _pretty_strategy(str(row.get("strategy") or "LIVE"))
-    symbol = _html(row.get("symbol") or "?")
-    instrument = _html(row.get("instrument") or "?")
-    units = _format_amount(row.get("units"), 2)
-    score = _format_amount(row.get("score"), 0)
-    risk_amount = _format_amount(row.get("risk_amount"), 2)
     return "\n".join(
         [
-            f"✅ <b>TRADE OPENED: {_html(strategy)} {direction}</b> | {symbol} {dir_emoji}",
-            "━━━━━━━━━━━━━━━",
-            f"Instrument: {instrument}",
-            f"Entry: {_format_price(row.get('entry_price'))}",
-            f"TP: {_format_price(row.get('tp_price'))}",
-            f"SL: {_format_price(row.get('sl_price'))}",
-            f"Units: {units} | Risk model: {risk_amount}",
-            f"Score: {score} | Bucket: {_html(row.get('bucket') or '?')}",
-            f"Order: {_html(row.get('order_id') or 'live')}",
+            "✅ <b>TRADE OPENED</b>",
+            _format_position_lines(row)[0],
         ]
     )
 
@@ -496,6 +551,13 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             position.entry_price = fill_price
         position.order_id = _order_id(response)
         row = _position_row(position, instrument, signed_units)
+        try:
+            live_trade = next((trade for trade in client.open_trades() if str(trade.get("id") or "") == position.order_id), None)
+            enriched_row = _row_from_oanda_trade(config, live_trade, row) if live_trade else None
+            if enriched_row is not None:
+                row = enriched_row
+        except RuntimeError as exc:
+            errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "reconcile", "error": str(exc)})
         rows.append(row)
         positions.append(position)
         open_instruments.add(instrument)
@@ -511,6 +573,9 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
                 "tp_price": position.tp_price,
                 "sl_price": position.sl_price,
                 "risk_amount": round(position.risk_amount, 2),
+                "entry_budget": row.get("entry_budget"),
+                "unrealized_pl": row.get("unrealized_pl"),
+                "current_value": row.get("current_value"),
                 "bucket": position.bucket,
                 "score": round(signal.score, 2),
             }
@@ -574,7 +639,7 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
         lines.append("✅ Opened this scan")
         for row in live_orders[:3]:
             if isinstance(row, dict):
-                lines.append(f"TRADE OPENED: {row.get('side', '?')} {row.get('symbol', '?')} | {row.get('instrument', '?')} | units {row.get('units', '?')}")
+                lines.append(f"TRADE OPENED: {_format_position_lines(row)[0]}")
 
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
