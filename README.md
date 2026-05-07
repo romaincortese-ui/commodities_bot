@@ -52,7 +52,7 @@ Mount a Railway volume at `/data` before live trading so runtime state survives 
 
 ## Backtest Standard
 
-The default 30-day validation backtest uses built-in deterministic fixture data because broker credentials are not available during CI/deployment setup. The backtest report clearly records `data_provider=fixture`. Once OANDA credentials are configured, the data provider can be extended to pull broker candles for the same engine.
+The default 30-day validation backtest uses built-in deterministic fixture data because broker credentials are not available during CI/deployment setup. The backtest report clearly records `data_provider=fixture`. Once OANDA credentials are configured, set `BACKTEST_DATA_PROVIDER=oanda` to pull broker candles for mapped symbols and fall back to fixtures for unmapped products.
 
 Live go/no-go should require:
 

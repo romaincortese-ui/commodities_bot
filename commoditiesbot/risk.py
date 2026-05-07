@@ -6,7 +6,7 @@ from commoditiesbot.config import CommodityConfig, SYMBOL_BUCKETS
 from commoditiesbot.models import CommodityPosition, CommoditySignal
 
 
-BASE_RISK_BY_BUCKET = {"ENERGY": 0.0035, "GRAINS": 0.0030, "SOFTS": 0.0025}
+BASE_RISK_BY_BUCKET = {"ENERGY": 0.004375, "GRAINS": 0.00375, "SOFTS": 0.003125}
 
 
 def risk_pct_for_signal(signal: CommoditySignal, config: CommodityConfig) -> float:

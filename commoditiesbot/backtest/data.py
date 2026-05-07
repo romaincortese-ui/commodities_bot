@@ -4,8 +4,9 @@ import math
 import random
 from datetime import datetime, timedelta, timezone
 
-from commoditiesbot.config import BASE_PRICES
+from commoditiesbot.config import BASE_PRICES, CommodityConfig
 from commoditiesbot.models import Candle
+from commoditiesbot.oanda_client import OandaClient
 
 
 class FixtureMarketDataProvider:
@@ -94,3 +95,38 @@ class FixtureMarketDataProvider:
             "SUGAR": 0.018,
             "COTTON": 0.016,
         }.get(symbol, 0.015)
+
+
+class OandaBacktestDataProvider:
+    def __init__(self, config: CommodityConfig, days: int = 120) -> None:
+        self.config = config
+        self.days = days
+        self.client = OandaClient(config)
+        self.fixture = FixtureMarketDataProvider(days=days)
+        self.provider_by_symbol: dict[str, str] = {}
+        self.failures: list[str] = []
+
+    def history(self, symbol: str) -> list[Candle]:
+        symbol = symbol.upper()
+        instrument = self.config.oanda_instrument_for(symbol)
+        if instrument and self.config.has_oanda_credentials:
+            try:
+                candles = self.client.candles(instrument, count=self.days, granularity="D")
+                if len(candles) >= 45:
+                    self.provider_by_symbol[symbol] = f"oanda:{instrument}"
+                    return candles
+                self.failures.append(f"{symbol}:too_few_oanda_candles")
+            except RuntimeError as exc:
+                self.failures.append(f"{symbol}:{str(exc)[:120]}")
+        self.provider_by_symbol[symbol] = "fixture"
+        return self.fixture.history(symbol)
+
+    @property
+    def provider_counts(self) -> dict[str, int]:
+        counts = {"oanda": 0, "fixture": 0}
+        for provider in self.provider_by_symbol.values():
+            if provider.startswith("oanda:"):
+                counts["oanda"] += 1
+            else:
+                counts["fixture"] += 1
+        return counts

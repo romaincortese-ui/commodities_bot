@@ -7,7 +7,7 @@ from commoditiesbot.strategies.common import trend_signal
 
 def softs_signal(symbol: str, candles: list[Candle], config: CommodityConfig) -> CommoditySignal | None:
     event_bias = {"COFFEE": 2.0, "COCOA": 2.0, "SUGAR": 1.0, "COTTON": -0.25}.get(symbol, 0.0)
-    return trend_signal(
+    signal = trend_signal(
         symbol,
         candles,
         f"{symbol}_SUPPLY_WEATHER_TREND",
@@ -18,3 +18,6 @@ def softs_signal(symbol: str, candles: list[Candle], config: CommodityConfig) ->
         event_bias=event_bias,
         prefer_breakout=True,
     )
+    if signal is not None and symbol == "SUGAR" and signal.score < 70.0:
+        return None
+    return signal

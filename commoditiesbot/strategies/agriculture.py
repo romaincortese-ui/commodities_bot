@@ -7,7 +7,7 @@ from commoditiesbot.strategies.common import trend_signal
 
 def agriculture_signal(symbol: str, candles: list[Candle], config: CommodityConfig) -> CommoditySignal | None:
     event_bias = {"CORN": 1.0, "WHEAT": -0.5, "SOYBEANS": 1.25}.get(symbol, 0.0)
-    return trend_signal(
+    signal = trend_signal(
         symbol,
         candles,
         f"{symbol}_CROP_WEATHER_TREND",
@@ -18,3 +18,6 @@ def agriculture_signal(symbol: str, candles: list[Candle], config: CommodityConf
         event_bias=event_bias,
         prefer_breakout=True,
     )
+    if signal is not None and signal.side == "LONG" and signal.score < 80.0:
+        return None
+    return signal
