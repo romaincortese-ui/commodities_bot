@@ -85,18 +85,24 @@ def _format_boot_message(config: CommodityConfig, state: dict[str, Any], started
     mode_icon = "🔴" if not config.paper_trade else "🧪"
     mode_text = "LIVE config" if not config.paper_trade else "PAPER"
     started = started_at or datetime.now(timezone.utc)
-    open_count = len(_state_position_rows(state))
-    return "\n".join(
-        [
-            "🚀 <b>Commodities Bot Boot</b>",
-            "━━━━━━━━━━━━━━━",
-            f"Mode: {mode_icon} {mode_text} | Execution: {_execution_label(config)}",
-            f"Universe: {len(config.universe)} symbols",
-            f"Open positions from state: {open_count}",
-            f"Scan interval: {max(30, config.scan_interval_seconds)}s | Heartbeat: {config.heartbeat_seconds}s",
-            f"Started: {_format_time(started)}",
-        ]
-    )
+    rows = _state_position_rows(state)
+    lines = [
+        "🚀 <b>Commodities Bot Boot</b>",
+        "━━━━━━━━━━━━━━━",
+        f"Mode: {mode_icon} {mode_text} | Execution: {_execution_label(config)}",
+        f"Universe: {len(config.universe)} symbols",
+        f"Open positions after OANDA sync: {len(rows)} / {config.max_open_positions}",
+        f"Scan interval: {max(30, config.scan_interval_seconds)}s | Heartbeat: {config.heartbeat_seconds}s",
+        f"Started: {_format_time(started)}",
+    ]
+    if rows:
+        lines.append("")
+        lines.append("📂 <b>Open positions</b>")
+        for row in rows[:4]:
+            lines.extend(_format_position_lines(row))
+        if len(rows) > 4:
+            lines.append(f"+{len(rows) - 4} more")
+    return "\n".join(lines)
 
 
 def _format_live_issue(row: dict[str, object]) -> str:
@@ -234,6 +240,89 @@ def _state_position_rows(state: dict[str, Any]) -> list[dict[str, object]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _strategy_for_symbol(symbol: str) -> str:
+    if symbol == "NATGAS":
+        return "NATGAS_WEATHER_STORAGE"
+    if symbol in {"GASOLINE", "HEATING_OIL"}:
+        return "PRODUCT_INVENTORY_TREND"
+    if symbol in {"WTI", "BRENT"}:
+        return "CRUDE_INVENTORY_TREND"
+    if SYMBOL_BUCKETS.get(symbol) == "GRAINS":
+        return f"{symbol}_CROP_WEATHER_TREND"
+    if SYMBOL_BUCKETS.get(symbol) == "SOFTS":
+        return f"{symbol}_SUPPLY_WEATHER_TREND"
+    return "OANDA_RECONCILED"
+
+
+def _symbol_for_instrument(config: CommodityConfig, instrument: str) -> str:
+    instrument = instrument.strip().upper()
+    for symbol in config.universe:
+        if config.oanda_instrument_for(symbol).upper() == instrument:
+            return symbol
+    for symbol, candidate in config.oanda_instruments.items():
+        if candidate.upper() == instrument:
+            return symbol
+    return ""
+
+
+def _oanda_order_price(trade: dict[str, object], order_key: str) -> float:
+    order = trade.get(order_key)
+    if not isinstance(order, dict):
+        return 0.0
+    return _float_or_none(order.get("price")) or 0.0
+
+
+def _row_from_oanda_trade(config: CommodityConfig, trade: dict[str, object], existing: dict[str, object] | None = None) -> dict[str, object] | None:
+    instrument = str(trade.get("instrument") or "").strip().upper()
+    symbol = _symbol_for_instrument(config, instrument)
+    signed_units = _float_or_none(trade.get("currentUnits")) or 0.0
+    entry_price = _float_or_none(trade.get("price")) or 0.0
+    if not instrument or not symbol or signed_units == 0.0 or entry_price <= 0.0:
+        return None
+    existing = existing or {}
+    side = "LONG" if signed_units > 0 else "SHORT"
+    units = abs(signed_units)
+    sl_price = _oanda_order_price(trade, "stopLossOrder") or _float_or_none(existing.get("sl_price")) or 0.0
+    tp_price = _oanda_order_price(trade, "takeProfitOrder") or _float_or_none(existing.get("tp_price")) or 0.0
+    risk_amount = _float_or_none(existing.get("risk_amount"))
+    if risk_amount is None and sl_price > 0:
+        risk_amount = abs(entry_price - sl_price) * units
+    metadata = dict(existing.get("metadata") or {}) if isinstance(existing.get("metadata"), dict) else {}
+    metadata["reconciled_from_oanda"] = True
+    client_extensions = trade.get("clientExtensions")
+    if isinstance(client_extensions, dict) and client_extensions.get("tag"):
+        metadata["oanda_tag"] = str(client_extensions["tag"])
+    strategy = str(existing.get("strategy") or _strategy_for_symbol(symbol))
+    return {
+        "symbol": symbol,
+        "instrument": instrument,
+        "side": side,
+        "strategy": strategy,
+        "entry_price": entry_price,
+        "units": units,
+        "order_units": signed_units,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+        "opened_at": _coerce_time(trade.get("openTime")).isoformat(),
+        "risk_amount": risk_amount or 0.0,
+        "bucket": SYMBOL_BUCKETS.get(symbol, "OTHER"),
+        "order_id": str(trade.get("id") or existing.get("order_id") or "live"),
+        "metadata": _json_safe(metadata),
+    }
+
+
+def _format_position_lines(row: dict[str, object]) -> list[str]:
+    side = str(row.get("side") or "?").upper()
+    side_icon = "🟢" if side == "LONG" else "🔴"
+    return [
+        (
+            f"{side_icon} {_html(row.get('symbol') or '?')} {side} | {_html(row.get('instrument') or '?')} | "
+            f"units {_format_amount(row.get('units'), 2)} | entry {_format_price(row.get('entry_price'))}"
+        ),
+        f"   TP {_format_price(row.get('tp_price'))} | SL {_format_price(row.get('sl_price'))} | opened {_format_time(row.get('opened_at') or '')}",
+    ]
+
+
 def _sync_open_position_rows(config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], set[str], list[dict[str, object]], list[dict[str, object]]]:
     rows = _state_position_rows(state)
     errors: list[dict[str, object]] = []
@@ -242,16 +331,35 @@ def _sync_open_position_rows(config: CommodityConfig, client: OandaClient, state
     if not config.has_oanda_credentials:
         return rows, open_instruments, errors, closed_rows
     try:
-        open_instruments = client.open_positions()
-        kept_rows: list[dict[str, object]] = []
+        trades = client.open_trades()
+        live_trade_ids = {str(trade.get("id") or "") for trade in trades if isinstance(trade, dict) and trade.get("id")}
+        existing_by_order_id = {str(row.get("order_id") or ""): row for row in rows if row.get("order_id")}
+        existing_by_instrument: dict[str, dict[str, object]] = {}
         for row in rows:
             instrument = str(row.get("instrument") or "").strip().upper()
-            if instrument in open_instruments:
-                kept_rows.append(row)
-            elif instrument:
+            if instrument and instrument not in existing_by_instrument:
+                existing_by_instrument[instrument] = row
+        reconciled_rows: list[dict[str, object]] = []
+        for trade in trades:
+            instrument = str(trade.get("instrument") or "").strip().upper()
+            if instrument:
+                open_instruments.add(instrument)
+            existing = existing_by_order_id.get(str(trade.get("id") or "")) or existing_by_instrument.get(instrument)
+            row = _row_from_oanda_trade(config, trade, existing)
+            if row is None:
+                errors.append({"stage": "reconcile", "instrument": instrument or "unknown", "reason": "unmapped_open_trade"})
+                continue
+            reconciled_rows.append(row)
+        for row in rows:
+            order_id = str(row.get("order_id") or "")
+            instrument = str(row.get("instrument") or "").strip().upper()
+            if (order_id and order_id in live_trade_ids) or (not order_id and instrument in open_instruments):
+                continue
+            if instrument:
                 closed_rows.append(row)
-        rows = kept_rows
+        rows = reconciled_rows
         state["open_positions"] = rows
+        state["last_oanda_reconciled_at"] = datetime.now(timezone.utc).isoformat()
     except RuntimeError as exc:
         errors.append({"stage": "open_positions", "error": str(exc)})
     return rows, open_instruments, errors, closed_rows
@@ -287,7 +395,7 @@ def _format_order_opened_message(row: dict[str, object]) -> str:
     risk_amount = _format_amount(row.get("risk_amount"), 2)
     return "\n".join(
         [
-            f"{dir_emoji} <b>{_html(strategy)} {direction}</b> | {symbol}",
+            f"✅ <b>TRADE OPENED: {_html(strategy)} {direction}</b> | {symbol} {dir_emoji}",
             "━━━━━━━━━━━━━━━",
             f"Instrument: {instrument}",
             f"Entry: {_format_price(row.get('entry_price'))}",
@@ -325,7 +433,7 @@ def _send_trade_lifecycle_alerts(notifier: TelegramNotifier, live_orders: list[d
 
 def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     if config.paper_trade or not config.live_trading_enabled:
-        state["last_closed_positions"] = []
+        state.setdefault("last_closed_positions", [])
         return [], []
     rows, open_instruments, errors, closed_positions = _sync_open_position_rows(config, client, state)
     state["last_closed_positions"] = closed_positions
@@ -423,13 +531,21 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     execution = _execution_label(config)
     mode_icon = "🔴" if not config.paper_trade else "🧪"
     mode_text = "LIVE config" if not config.paper_trade else "PAPER"
+    open_positions = snapshot.get("open_positions", [])
+    open_positions = open_positions if isinstance(open_positions, list) else []
 
     lines = [
         "🌾 Commodities Bot",
         f"{mode_icon} Mode: {mode_text} | Execution: {execution}",
         f"🕒 Scan: {_format_time(snapshot.get('time', ''))}",
         f"📊 Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count} | Instruments {snapshot.get('oanda_instrument_count', 0)}",
+        f"📂 Open positions: {len(open_positions)} / {config.max_open_positions}",
     ]
+    for row in open_positions[:4]:
+        if isinstance(row, dict):
+            lines.extend(_format_position_lines(row))
+    if len(open_positions) > 4:
+        lines.append(f"+{len(open_positions) - 4} more open positions")
     if failure_count:
         failed_symbols = ", ".join(str(item).split(":", 1)[0] for item in failures[:3]) if isinstance(failures, list) else "some symbols"
         suffix = "" if failure_count <= 3 else f" +{failure_count - 3} more"
@@ -455,10 +571,10 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     live_orders = snapshot.get("live_orders", [])
     if isinstance(live_orders, list) and live_orders:
         lines.append("")
-        lines.append("✅ Live Orders")
+        lines.append("✅ Opened this scan")
         for row in live_orders[:3]:
             if isinstance(row, dict):
-                lines.append(f"{row.get('side', '?')} {row.get('symbol', '?')} | {row.get('instrument', '?')} | units {row.get('units', '?')}")
+                lines.append(f"TRADE OPENED: {row.get('side', '?')} {row.get('symbol', '?')} | {row.get('instrument', '?')} | units {row.get('units', '?')}")
 
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
@@ -474,18 +590,9 @@ def _format_positions_message(config: CommodityConfig, state: dict[str, Any]) ->
     rows = _state_position_rows(state)
     if not rows:
         return "📭 <b>No open commodity positions.</b>"
-    lines = ["📂 <b>Commodity Positions</b>", "━━━━━━━━━━━━━━━"]
+    lines = ["📂 <b>Commodity Positions</b>", "━━━━━━━━━━━━━━━", "Synced from OANDA before this reply."]
     for row in rows[:10]:
-        side = str(row.get("side") or "?").upper()
-        side_icon = "🟢" if side == "LONG" else "🔴"
-        lines.append(
-            f"{side_icon} {_html(row.get('symbol') or '?')} | {_html(row.get('instrument') or '?')} | "
-            f"units {_format_amount(row.get('units'), 2)}"
-        )
-        lines.append(
-            f"   Entry {_format_price(row.get('entry_price'))} | TP {_format_price(row.get('tp_price'))} | "
-            f"SL {_format_price(row.get('sl_price'))}"
-        )
+        lines.extend(_format_position_lines(row))
     if len(rows) > 10:
         lines.append(f"+{len(rows) - 10} more")
     return "\n".join(lines)
@@ -507,6 +614,7 @@ def _format_status_message(config: CommodityConfig, state: dict[str, Any], equit
     sync_errors = sync_errors or []
     rows = _state_position_rows(state)
     last_scan = _format_time(snapshot.get("time")) if snapshot.get("time") else "n/a"
+    last_sync = _format_time(state.get("last_oanda_reconciled_at")) if state.get("last_oanda_reconciled_at") else "n/a"
     equity_text = _format_amount(equity, 2) if equity is not None else "n/a"
     mode_icon = "🔴" if not config.paper_trade else "🧪"
     mode_text = "LIVE config" if not config.paper_trade else "PAPER"
@@ -518,6 +626,7 @@ def _format_status_message(config: CommodityConfig, state: dict[str, Any], equit
         f"Equity/NAV: {equity_text}",
         f"Open positions: {len(rows)} / {config.max_open_positions}",
         f"Last scan: {last_scan}",
+        f"Last OANDA position sync: {last_sync}",
         f"Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count}",
         f"OANDA fetch issues: {failure_count} | Live order issues: {live_error_count} | Sync issues: {len(sync_errors)}",
         f"Telegram: commands online",
@@ -526,12 +635,7 @@ def _format_status_message(config: CommodityConfig, state: dict[str, Any], equit
         lines.append("")
         lines.append("📂 <b>Open positions</b>")
         for row in rows[:5]:
-            side = str(row.get("side") or "?").upper()
-            side_icon = "🟢" if side == "LONG" else "🔴"
-            lines.append(
-                f"{side_icon} {_html(row.get('symbol') or '?')} | {_html(row.get('instrument') or '?')} | "
-                f"entry {_format_price(row.get('entry_price'))} | units {_format_amount(row.get('units'), 2)}"
-            )
+            lines.extend(_format_position_lines(row))
     top_signals = snapshot.get("top_signals", [])
     if isinstance(top_signals, list) and top_signals:
         top = next((row for row in top_signals if isinstance(row, dict)), None)
@@ -554,6 +658,19 @@ def _handle_status_command(config: CommodityConfig, client: OandaClient, state: 
     if closed_positions:
         _send_trade_lifecycle_alerts(notifier, [], closed_positions)
     notifier.send(_format_status_message(config, state, equity, sync_errors), parse_mode="HTML")
+
+
+def _handle_positions_command(config: CommodityConfig, client: OandaClient, state: dict[str, Any], notifier: TelegramNotifier) -> None:
+    sync_errors: list[dict[str, object]] = []
+    closed_positions: list[dict[str, object]] = []
+    if config.has_oanda_credentials:
+        _, _, sync_errors, closed_positions = _sync_open_position_rows(config, client, state)
+        state["last_closed_positions"] = closed_positions
+    if closed_positions:
+        _send_trade_lifecycle_alerts(notifier, [], closed_positions)
+    if sync_errors:
+        state["last_position_sync_errors"] = sync_errors[:5]
+    notifier.send(_format_positions_message(config, state), parse_mode="HTML")
 
 
 def _command_from_text(text: str) -> str:
@@ -592,7 +709,7 @@ def _poll_telegram_commands(config: CommodityConfig, client: OandaClient, state_
         if command == "/status":
             _handle_status_command(config, client, state, notifier)
         elif command == "/positions":
-            notifier.send(_format_positions_message(config, state), parse_mode="HTML")
+            _handle_positions_command(config, client, state, notifier)
         elif command == "/help":
             notifier.send(_format_help_message(), parse_mode="HTML")
     state[LAST_TELEGRAM_UPDATE_ID_KEY] = last_update_id
@@ -657,6 +774,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
 
     signals.sort(key=lambda item: item.score, reverse=True)
     live_orders, live_order_errors = _execute_live_orders(signals, config, client, state)
+    open_positions = _state_position_rows(state)
     snapshot = {
         "time": datetime.now(timezone.utc).isoformat(),
         "paper_trade": config.paper_trade,
@@ -666,6 +784,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "oanda_failures": oanda_failures[:5],
         "live_orders": live_orders,
         "live_order_errors": live_order_errors[:5],
+        "open_positions": open_positions,
         "closed_positions": state.get("last_closed_positions", []),
         "top_signals": [
             {
@@ -706,7 +825,16 @@ def run_bot() -> None:
         raise RuntimeError("Live trading requested but OANDA_ACCOUNT_ID/OANDA_API_TOKEN are missing")
 
     boot_state = state_store.load()
+    boot_closed_positions: list[dict[str, object]] = []
+    if config.has_oanda_credentials:
+        _, _, boot_sync_errors, boot_closed_positions = _sync_open_position_rows(config, client, boot_state)
+        boot_state["last_closed_positions"] = boot_closed_positions
+        if boot_sync_errors:
+            boot_state["last_boot_sync_errors"] = boot_sync_errors[:5]
+        state_store.save(boot_state)
     notifier.send(_format_boot_message(config, boot_state), parse_mode="HTML")
+    if boot_closed_positions:
+        _send_trade_lifecycle_alerts(notifier, [], boot_closed_positions)
 
     while True:
         _poll_telegram_commands(config, client, state_store, notifier)

@@ -111,6 +111,13 @@ class OandaClient:
                 open_instruments.add(instrument)
         return open_instruments
 
+    def open_trades(self) -> list[dict[str, object]]:
+        payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/openTrades")
+        trades = payload.get("trades", [])
+        if not isinstance(trades, list):
+            return []
+        return [trade for trade in trades if isinstance(trade, dict)]
+
     def instrument_tradeable(self, instrument: str) -> tuple[bool, str]:
         params = urlencode({"instruments": instrument, "includeHomeConversions": "false"})
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/pricing?{params}")
