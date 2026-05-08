@@ -5,6 +5,39 @@ from commoditiesbot.indicators import atr, clamp, ema, highest, lowest, momentum
 from commoditiesbot.models import Candle, CommoditySignal
 
 
+STOP_FLOOR_BY_BUCKET = {"ENERGY": 0.0045, "GRAINS": 0.0035, "SOFTS": 0.0040}
+
+
+def _adaptive_stop_distance(
+    *,
+    price: float,
+    atr_value: float,
+    atr_mult: float,
+    trend: float,
+    score: float,
+    min_score: float,
+    volatility: float,
+    bucket: str,
+) -> tuple[float, dict[str, float]]:
+    atr_pct = atr_value / max(price, 0.0001)
+    trend_strength = clamp(abs(trend) / 4.0, 0.0, 1.0)
+    signal_confidence = clamp((score - min_score) / 20.0, 0.0, 1.0)
+    volatility_ratio = clamp(volatility / max(atr_pct, 0.0001), 0.75, 1.35)
+
+    adaptive_mult = atr_mult * (0.85 + 0.10 * volatility_ratio - 0.25 * trend_strength - 0.15 * signal_confidence)
+    adaptive_mult = clamp(adaptive_mult, 0.60, 1.35)
+
+    bucket_floor = STOP_FLOOR_BY_BUCKET.get(bucket, 0.0040)
+    floor_pct = max(0.0025, min(bucket_floor, atr_pct * 0.80))
+    distance = max(atr_value * adaptive_mult, price * floor_pct)
+    return distance, {
+        "atr_pct": atr_pct,
+        "stop_atr_mult": adaptive_mult,
+        "stop_floor_pct": floor_pct,
+        "stop_distance": distance,
+    }
+
+
 def trend_signal(
     symbol: str,
     candles: list[Candle],
@@ -50,7 +83,17 @@ def trend_signal(
         return None
 
     price = last.close
-    stop_distance = max(atr_value * atr_mult, price * 0.006)
+    bucket = SYMBOL_BUCKETS.get(symbol, "OTHER")
+    stop_distance, stop_metadata = _adaptive_stop_distance(
+        price=price,
+        atr_value=atr_value,
+        atr_mult=atr_mult,
+        trend=trend,
+        score=score,
+        min_score=min_score,
+        volatility=vol,
+        bucket=bucket,
+    )
     if side == "LONG":
         sl_price = price - stop_distance
         tp_price = price + stop_distance * reward_risk
@@ -69,6 +112,6 @@ def trend_signal(
         expected_hold_bars=max_hold,
         data_freshness_minutes=24.0 * 60.0,
         event_risk="NORMAL",
-        bucket=SYMBOL_BUCKETS.get(symbol, "OTHER"),
-        metadata={"time": last.time, "mom5": mom5, "mom15": mom15, "trend": trend, "expected_hold_bars": max_hold},
+        bucket=bucket,
+        metadata={"time": last.time, "mom5": mom5, "mom15": mom15, "trend": trend, "expected_hold_bars": max_hold, **stop_metadata},
     )
