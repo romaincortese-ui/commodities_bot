@@ -133,6 +133,9 @@ class CommodityConfig:
     daily_loss_halt_pct: float
     rolling_dd_throttle_pct: float
     rolling_dd_halt_pct: float
+    profit_lock_enabled: bool
+    profit_lock_trigger_pct: float
+    profit_lock_pullback_pct: float
     backtest_initial_balance: float
     backtest_days: int
     backtest_data_provider: str
@@ -172,6 +175,9 @@ class CommodityConfig:
             daily_loss_halt_pct=_float("DAILY_LOSS_HALT_PCT", 0.015),
             rolling_dd_throttle_pct=_float("ROLLING_DD_THROTTLE_PCT", 0.050),
             rolling_dd_halt_pct=_float("ROLLING_DD_HALT_PCT", 0.090),
+            profit_lock_enabled=_bool("PROFIT_LOCK_ENABLED", True),
+            profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 15.0),
+            profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 2.0),
             backtest_initial_balance=_float("BACKTEST_INITIAL_BALANCE", 10000.0),
             backtest_days=_int("BACKTEST_DAYS", 30),
             backtest_data_provider=os.environ.get("BACKTEST_DATA_PROVIDER", "fixture").strip().lower(),

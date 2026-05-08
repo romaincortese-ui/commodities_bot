@@ -106,6 +106,14 @@ def _position_current_value(row: dict[str, object]) -> float | None:
     return None
 
 
+def _position_pnl_pct(row: dict[str, object]) -> float | None:
+    entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    if entry_budget is None or entry_budget <= 0 or unrealized_pl is None:
+        return None
+    return unrealized_pl / entry_budget * 100.0
+
+
 def _held_minutes(row: dict[str, object], closed_at: datetime | None = None) -> float:
     opened_at = _coerce_time(row.get("opened_at"))
     closed_time = closed_at or datetime.now(timezone.utc)
@@ -379,7 +387,7 @@ def _format_position_lines(row: dict[str, object]) -> list[str]:
     side_icon = "🟢" if side == "LONG" else "🔴"
     entry_budget = _position_entry_budget(row)
     unrealized_pl = _position_unrealized_pl(row)
-    pnl_pct = (unrealized_pl / entry_budget * 100.0) if entry_budget and unrealized_pl is not None else None
+    pnl_pct = _position_pnl_pct(row)
     current_value = _position_current_value(row)
     return [
         (
@@ -388,6 +396,82 @@ def _format_position_lines(row: dict[str, object]) -> list[str]:
             f"Current value: {_format_money(current_value)}"
         ),
     ]
+
+
+def _format_profit_lock_message(row: dict[str, object]) -> str:
+    return "\n".join(
+        [
+            "✅ <b>PROFIT TAKEN: PEAK PULLBACK</b>",
+            _format_position_lines(row)[0],
+            (
+                f"Peak: {_format_signed_percent(row.get('peak_pnl_pct'))} | "
+                f"Pullback: {_format_amount(row.get('pullback_from_peak_pct'), 2)} pts | closed at market"
+            ),
+        ]
+    )
+
+
+def _metadata_dict(row: dict[str, object]) -> dict[str, object]:
+    metadata = row.get("metadata")
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    return {}
+
+
+def _update_peak_pnl(row: dict[str, object], now: datetime) -> tuple[float | None, float | None]:
+    pnl_pct = _position_pnl_pct(row)
+    if pnl_pct is None:
+        return None, None
+    metadata = _metadata_dict(row)
+    peak_pnl_pct = _float_or_none(metadata.get("peak_pnl_pct"))
+    if peak_pnl_pct is None or pnl_pct > peak_pnl_pct:
+        peak_pnl_pct = pnl_pct
+        metadata["peak_pnl_pct"] = peak_pnl_pct
+        metadata["peak_seen_at"] = now.isoformat()
+        metadata["peak_current_value"] = _position_current_value(row)
+        metadata["peak_unrealized_pl"] = _position_unrealized_pl(row)
+        row["metadata"] = _json_safe(metadata)
+    return pnl_pct, peak_pnl_pct
+
+
+def _apply_profit_protection(config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    updates: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    if not config.profit_lock_enabled or config.paper_trade or not config.live_trading_enabled or not config.has_oanda_credentials:
+        state["last_profit_protection_updates"] = []
+        return updates, errors
+    rows = _state_position_rows(state)
+    kept_rows: list[dict[str, object]] = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        instrument = str(row.get("instrument") or "").strip().upper()
+        trade_id = str(row.get("order_id") or "").strip()
+        if not instrument or not trade_id:
+            kept_rows.append(row)
+            continue
+        pnl_pct, peak_pnl_pct = _update_peak_pnl(row, now)
+        if pnl_pct is None or peak_pnl_pct is None:
+            kept_rows.append(row)
+            continue
+        pullback_pct = peak_pnl_pct - pnl_pct
+        if peak_pnl_pct < max(0.0, config.profit_lock_trigger_pct) or pullback_pct < max(0.0, config.profit_lock_pullback_pct) or pnl_pct <= 0.0:
+            kept_rows.append(row)
+            continue
+        try:
+            client.close_trade(trade_id)
+        except RuntimeError as exc:
+            errors.append({"symbol": row.get("symbol") or instrument, "instrument": instrument, "stage": "profit_lock_close", "error": str(exc)})
+            kept_rows.append(row)
+            continue
+        row["peak_pnl_pct"] = peak_pnl_pct
+        row["pullback_from_peak_pct"] = pullback_pct
+        row["closed_at"] = now.isoformat()
+        row["exit_reason"] = "peak_pullback_profit_lock"
+        updates.append(dict(row))
+    state["open_positions"] = kept_rows
+    state["last_profit_protection_updates"] = updates
+    state["last_profit_protection_errors"] = errors[:5]
+    return updates, errors
 
 
 def _sync_open_position_rows(config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], set[str], list[dict[str, object]], list[dict[str, object]]]:
@@ -486,12 +570,24 @@ def _send_trade_lifecycle_alerts(notifier: TelegramNotifier, live_orders: list[d
         notifier.send(_format_order_opened_message(row), parse_mode="HTML")
 
 
+def _send_profit_lock_alerts(notifier: TelegramNotifier, updates: list[dict[str, object]]) -> None:
+    if not isinstance(updates, list):
+        return
+    for row in updates:
+        if isinstance(row, dict):
+            notifier.send(_format_profit_lock_message(row), parse_mode="HTML")
+
+
 def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     if config.paper_trade or not config.live_trading_enabled:
         state.setdefault("last_closed_positions", [])
         return [], []
     rows, open_instruments, errors, closed_positions = _sync_open_position_rows(config, client, state)
     state["last_closed_positions"] = closed_positions
+    profit_updates, profit_errors = _apply_profit_protection(config, client, state)
+    errors.extend(profit_errors)
+    if profit_updates:
+        rows = _state_position_rows(state)
     positions = [position for position in (_position_from_state(row) for row in rows) if position is not None]
     equity = _account_equity(config, client, state)
     orders: list[dict[str, object]] = []
@@ -641,6 +737,14 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
             if isinstance(row, dict):
                 lines.append(f"TRADE OPENED: {_format_position_lines(row)[0]}")
 
+    profit_updates = snapshot.get("profit_protection_updates", [])
+    if isinstance(profit_updates, list) and profit_updates:
+        lines.append("")
+        lines.append("✅ Profit taken on peak pullback")
+        for row in profit_updates[:3]:
+            if isinstance(row, dict):
+                lines.append(f"{row.get('symbol', '?')} closed | peak {_format_signed_percent(row.get('peak_pnl_pct'))} | pullback {_format_amount(row.get('pullback_from_peak_pct'), 2)} pts")
+
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
         lines.append(f"⚠️ Live order issue(s): {len(live_errors)}")
@@ -722,6 +826,10 @@ def _handle_status_command(config: CommodityConfig, client: OandaClient, state: 
     equity = _account_equity(config, client, state)
     if closed_positions:
         _send_trade_lifecycle_alerts(notifier, [], closed_positions)
+    profit_updates, profit_errors = _apply_profit_protection(config, client, state)
+    sync_errors.extend(profit_errors)
+    if profit_updates:
+        _send_profit_lock_alerts(notifier, profit_updates)
     notifier.send(_format_status_message(config, state, equity, sync_errors), parse_mode="HTML")
 
 
@@ -733,6 +841,10 @@ def _handle_positions_command(config: CommodityConfig, client: OandaClient, stat
         state["last_closed_positions"] = closed_positions
     if closed_positions:
         _send_trade_lifecycle_alerts(notifier, [], closed_positions)
+    profit_updates, profit_errors = _apply_profit_protection(config, client, state)
+    sync_errors.extend(profit_errors)
+    if profit_updates:
+        _send_profit_lock_alerts(notifier, profit_updates)
     if sync_errors:
         state["last_position_sync_errors"] = sync_errors[:5]
     notifier.send(_format_positions_message(config, state), parse_mode="HTML")
@@ -840,6 +952,8 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     signals.sort(key=lambda item: item.score, reverse=True)
     live_orders, live_order_errors = _execute_live_orders(signals, config, client, state)
     open_positions = _state_position_rows(state)
+    profit_updates = state.get("last_profit_protection_updates", [])
+    profit_errors = state.get("last_profit_protection_errors", [])
     snapshot = {
         "time": datetime.now(timezone.utc).isoformat(),
         "paper_trade": config.paper_trade,
@@ -849,6 +963,8 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "oanda_failures": oanda_failures[:5],
         "live_orders": live_orders,
         "live_order_errors": live_order_errors[:5],
+        "profit_protection_updates": profit_updates if isinstance(profit_updates, list) else [],
+        "profit_protection_errors": profit_errors if isinstance(profit_errors, list) else [],
         "open_positions": open_positions,
         "closed_positions": state.get("last_closed_positions", []),
         "top_signals": [
@@ -872,6 +988,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     if not isinstance(closed_positions, list):
         closed_positions = []
     _send_trade_lifecycle_alerts(notifier, live_orders, [row for row in closed_positions if isinstance(row, dict)])
+    _send_profit_lock_alerts(notifier, [row for row in snapshot["profit_protection_updates"] if isinstance(row, dict)])
     if heartbeat_due:
         state[LAST_HEARTBEAT_AT_KEY] = now_ts
         state["last_telegram_heartbeat_time"] = snapshot["time"]
@@ -896,10 +1013,15 @@ def run_bot() -> None:
         boot_state["last_closed_positions"] = boot_closed_positions
         if boot_sync_errors:
             boot_state["last_boot_sync_errors"] = boot_sync_errors[:5]
+        boot_profit_updates, boot_profit_errors = _apply_profit_protection(config, client, boot_state)
+        if boot_profit_errors:
+            boot_state["last_boot_profit_lock_errors"] = boot_profit_errors[:5]
         state_store.save(boot_state)
     notifier.send(_format_boot_message(config, boot_state), parse_mode="HTML")
     if boot_closed_positions:
         _send_trade_lifecycle_alerts(notifier, [], boot_closed_positions)
+    if config.has_oanda_credentials:
+        _send_profit_lock_alerts(notifier, boot_state.get("last_profit_protection_updates", []))
 
     while True:
         _poll_telegram_commands(config, client, state_store, notifier)

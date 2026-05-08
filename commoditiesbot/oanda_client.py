@@ -155,6 +155,9 @@ class OandaClient:
             raise RuntimeError("pricing_missing_bid_ask") from exc
         return bid, ask
 
+    def close_trade(self, trade_id: str) -> dict[str, object]:
+        return self._request("PUT", f"/v3/accounts/{self.config.oanda_account_id}/trades/{trade_id}/close", {"units": "ALL"})
+
     def candles(self, instrument: str, count: int = 120, granularity: str = "D") -> list[Candle]:
         params = urlencode({"count": count, "granularity": granularity, "price": "M"})
         payload = self._request("GET", f"/v3/instruments/{instrument}/candles?{params}")

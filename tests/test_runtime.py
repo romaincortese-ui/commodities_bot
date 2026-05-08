@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from commoditiesbot.config import CommodityConfig
 from commoditiesbot.models import CommoditySignal
-from commoditiesbot.runtime import _execute_live_orders, _format_boot_message, _format_scan_message, _poll_telegram_commands, _send_trade_lifecycle_alerts, _should_send_heartbeat
+from commoditiesbot.runtime import _apply_profit_protection, _execute_live_orders, _format_boot_message, _format_scan_message, _poll_telegram_commands, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
@@ -14,6 +14,8 @@ class FakeOandaClient:
         self.orders: list[dict[str, object]] = []
         self.tradeable = True
         self.open_position_symbols: set[str] = set()
+        self.open_trade_rows: list[dict[str, object]] = []
+        self.closed_trades: list[str] = []
         self.bid = 79.99
         self.ask = 80.0
         self.order_response: dict[str, object] = {"orderFillTransaction": {"id": "fill-1", "price": "80.125", "tradeOpened": {"tradeID": "trade-1"}}}
@@ -24,6 +26,24 @@ class FakeOandaClient:
     def open_positions(self) -> set[str]:
         return set(self.open_position_symbols)
 
+    def open_trades(self) -> list[dict[str, object]]:
+        if self.open_trade_rows:
+            return list(self.open_trade_rows)
+        return [
+            {
+                "id": "trade-1",
+                "instrument": instrument,
+                "price": "80.0",
+                "currentUnits": "12.5",
+                "openTime": "2026-05-04T17:00:00Z",
+                "initialMarginRequired": "35.0",
+                "unrealizedPL": "0.0",
+                "stopLossOrder": {"price": "78.0"},
+                "takeProfitOrder": {"price": "84.0"},
+            }
+            for instrument in sorted(self.open_position_symbols)
+        ]
+
     def instrument_tradeable(self, instrument: str) -> tuple[bool, str]:
         return self.tradeable, "tradeable" if self.tradeable else "pricing_status_non_tradeable"
 
@@ -33,6 +53,10 @@ class FakeOandaClient:
     def place_market_order(self, instrument: str, units: float, tag: str, *, stop_loss: float | None = None, take_profit: float | None = None) -> dict[str, object]:
         self.orders.append({"instrument": instrument, "units": units, "tag": tag, "stop_loss": stop_loss, "take_profit": take_profit})
         return self.order_response
+
+    def close_trade(self, trade_id: str) -> dict[str, object]:
+        self.closed_trades.append(trade_id)
+        return {"orderFillTransaction": {"tradeClosed": {"tradeID": trade_id}}}
 
 
 class FakeNotifier:
@@ -145,7 +169,7 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertIn("<b>Commodities Bot Boot</b>", message)
         self.assertIn("Mode: 🔴 LIVE config | Execution: live orders", message)
         self.assertIn("Universe: 2 symbols", message)
-        self.assertIn("Open positions from state: 1", message)
+        self.assertIn("Open positions after OANDA sync: 1", message)
         self.assertIn("Started: 2026-05-05 19:00 UTC", message)
 
     def test_status_command_replies_to_authorized_chat(self) -> None:
@@ -266,11 +290,65 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(len(notifier.messages), 1)
         message, parse_mode = notifier.messages[0]
         self.assertEqual(parse_mode, "HTML")
-        self.assertIn("<b>Crude Inventory Trend LONG</b> | WTI", message)
-        self.assertIn("Entry: 80.12500", message)
-        self.assertIn("TP: 84.00000", message)
-        self.assertIn("SL: 78.00000", message)
-        self.assertIn("Order: trade-1", message)
+        self.assertIn("<b>TRADE OPENED</b>", message)
+        self.assertIn("🟢 WTI LONG", message)
+        self.assertIn("Entry Budget:", message)
+        self.assertIn("P&L: +0.00%", message)
+
+    def test_profit_protection_closes_after_peak_pullback(self) -> None:
+        config = replace(_live_config(), profit_lock_trigger_pct=15.0, profit_lock_pullback_pct=2.0)
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "WTI",
+                    "instrument": "WTICO_USD",
+                    "side": "LONG",
+                    "entry_price": 80.0,
+                    "units": 10.0,
+                    "sl_price": 78.0,
+                    "entry_budget": 100.0,
+                    "unrealized_pl": 37.0,
+                    "order_id": "trade-1",
+                    "metadata": {"peak_pnl_pct": 39.0},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+
+        updates, errors = _apply_profit_protection(config, client, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(client.closed_trades, ["trade-1"])
+        self.assertEqual(state["open_positions"], [])
+        self.assertAlmostEqual(float(updates[0]["peak_pnl_pct"]), 39.0, places=4)
+        self.assertAlmostEqual(float(updates[0]["pullback_from_peak_pct"]), 2.0, places=4)
+
+    def test_profit_protection_records_new_peak_without_closing(self) -> None:
+        config = replace(_live_config(), profit_lock_trigger_pct=15.0, profit_lock_pullback_pct=2.0)
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "WTI",
+                    "instrument": "WTICO_USD",
+                    "side": "LONG",
+                    "entry_price": 80.0,
+                    "units": 10.0,
+                    "entry_budget": 100.0,
+                    "unrealized_pl": 39.0,
+                    "order_id": "trade-1",
+                    "metadata": {"peak_pnl_pct": 37.0},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+
+        updates, errors = _apply_profit_protection(config, client, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(updates, [])
+        self.assertEqual(client.closed_trades, [])
+        self.assertAlmostEqual(float(state["open_positions"][0]["metadata"]["peak_pnl_pct"]), 39.0, places=4)
 
     def test_closed_oanda_position_generates_broker_close_alert(self) -> None:
         config = _live_config()
