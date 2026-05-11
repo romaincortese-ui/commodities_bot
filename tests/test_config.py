@@ -16,7 +16,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.has_oanda_credentials)
         self.assertEqual(config.universe, DEFAULT_UNIVERSE)
         self.assertEqual(config.scan_interval_seconds, 300)
-        self.assertEqual(config.heartbeat_seconds, 3600)
+        self.assertEqual(config.heartbeat_seconds, 21600)
 
     def test_list_variables_accept_commas_or_whitespace(self) -> None:
         env = {"COMMODITIES_UNIVERSE": "WTI BRENT,NATGAS", "COMMODITIES_STRATEGIES": "CRUDE NATGAS"}
