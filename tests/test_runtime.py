@@ -231,7 +231,8 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(parse_mode, "HTML")
         self.assertIn("<b>Commodities Status</b>", message)
         self.assertIn("Open positions: 1", message)
-        self.assertIn("Top signal: LONG WTI", message)
+        self.assertNotIn("Top signal", message)
+        self.assertNotIn("WTI | Score", message)
 
     def test_status_command_ignores_other_chats(self) -> None:
         config = _live_config()
