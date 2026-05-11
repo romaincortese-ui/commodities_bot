@@ -164,10 +164,30 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertNotIn("🏆 Top Signals", message)
         self.assertNotIn("BRENT", message)
 
+    def test_scan_message_with_no_positions_still_reports_summary(self) -> None:
+        config = CommodityConfig.from_env()
+        snapshot = {
+            "time": "2026-05-11T14:58:00+00:00",
+            "data_provider_counts": {"oanda": 7, "fixture": 5},
+            "oanda_instrument_count": 123,
+            "oanda_failures": ["COFFEE", "COCOA", "COTTON"],
+            "available_balance": 9876.54,
+            "open_positions": [],
+            "top_signals": [{"symbol": "COCOA", "side": "SHORT", "score": 89.8}],
+        }
+
+        message = _format_scan_message(snapshot, config)
+
+        self.assertIn("📂 Open positions: 0 / 4", message)
+        self.assertIn("💷 Total P&L: +0.00% | +£0.00", message)
+        self.assertIn("💰 Available Balance: £9876.54", message)
+        self.assertNotIn("🏆 Top Signals", message)
+        self.assertNotIn("COCOA | Score", message)
+
     def test_heartbeat_gate_limits_routine_telegram_messages(self) -> None:
-        self.assertTrue(_should_send_heartbeat({}, 1000.0, 3600))
-        self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 3600))
-        self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 4600.0, 3600))
+        self.assertTrue(_should_send_heartbeat({}, 1000.0, 21600))
+        self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 21600))
+        self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 22500.0, 21600))
 
     def test_boot_message_confirms_activation(self) -> None:
         config = replace(
@@ -176,7 +196,7 @@ class RuntimeMessageTests(unittest.TestCase):
             live_trading_enabled=True,
             universe=("WTI", "BRENT"),
             scan_interval_seconds=300,
-            heartbeat_seconds=3600,
+            heartbeat_seconds=21600,
         )
         state = {"open_positions": [{"instrument": "WTICO_USD"}]}
 

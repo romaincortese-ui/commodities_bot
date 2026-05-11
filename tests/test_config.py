@@ -25,6 +25,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.universe, ("WTI", "BRENT", "NATGAS"))
         self.assertEqual(config.strategies, ("CRUDE", "NATGAS"))
 
+    def test_heartbeat_env_is_clamped_to_six_hours(self) -> None:
+        with patch.dict(os.environ, {"COMMODITIES_HEARTBEAT_SECONDS": "3600"}, clear=True):
+            config = CommodityConfig.from_env()
+        self.assertEqual(config.heartbeat_seconds, 21600)
+        with patch.dict(os.environ, {"HEARTBEAT_SECONDS": "3600"}, clear=True):
+            config = CommodityConfig.from_env()
+        self.assertEqual(config.heartbeat_seconds, 21600)
+
     def test_oanda_instrument_override(self) -> None:
         with patch.dict(os.environ, {"OANDA_INSTRUMENT_GASOLINE": "RB_USD"}, clear=True):
             config = CommodityConfig.from_env()

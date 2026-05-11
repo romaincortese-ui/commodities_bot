@@ -22,6 +22,7 @@ DEFAULT_UNIVERSE = (
 )
 
 DEFAULT_STRATEGIES = ("CRUDE", "NATGAS", "PRODUCTS", "CORN", "WHEAT", "SOYBEANS", "SOFTS")
+MIN_HEARTBEAT_SECONDS = 21600
 
 SYMBOL_BUCKETS = {
     "WTI": "ENERGY",
@@ -103,6 +104,11 @@ def _int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _heartbeat_seconds() -> int:
+    configured = _int("COMMODITIES_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", MIN_HEARTBEAT_SECONDS))
+    return max(MIN_HEARTBEAT_SECONDS, configured)
+
+
 def _csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(name)
     if not raw:
@@ -165,7 +171,7 @@ class CommodityConfig:
                 for symbol in DEFAULT_UNIVERSE
             },
             scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
-            heartbeat_seconds=_int("COMMODITIES_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 21600)),
+            heartbeat_seconds=_heartbeat_seconds(),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),
             max_total_risk_pct=_float("MAX_TOTAL_RISK_PCT", 0.030),
