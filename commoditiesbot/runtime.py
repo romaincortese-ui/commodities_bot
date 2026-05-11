@@ -20,14 +20,6 @@ LAST_TELEGRAM_UPDATE_ID_KEY = "last_telegram_update_id"
 TELEGRAM_POLL_SECONDS = 5.0
 
 
-def _side_label(side: str) -> str:
-    return "🟢 LONG" if side.upper() == "LONG" else "🔴 SHORT"
-
-
-def _provider_label(provider: str) -> str:
-    return "📡 OANDA" if provider == "oanda" else "🧪 Fixture"
-
-
 def _pretty_strategy(strategy: str) -> str:
     return strategy.replace("_", " ").title()
 
@@ -62,6 +54,14 @@ def _format_money(value: object) -> str:
     if amount is None:
         return "n/a"
     sign = "-" if amount < 0 else ""
+    return f"{sign}£{abs(amount):.2f}"
+
+
+def _format_signed_money(value: object) -> str:
+    amount = _float_or_none(value)
+    if amount is None:
+        return "n/a"
+    sign = "+" if amount >= 0 else "-"
     return f"{sign}£{abs(amount):.2f}"
 
 
@@ -112,6 +112,23 @@ def _position_pnl_pct(row: dict[str, object]) -> float | None:
     if entry_budget is None or entry_budget <= 0 or unrealized_pl is None:
         return None
     return unrealized_pl / entry_budget * 100.0
+
+
+def _session_pnl(rows: list[object]) -> tuple[float, float]:
+    total_entry_budget = 0.0
+    total_pnl = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        unrealized_pl = _position_unrealized_pl(row)
+        if unrealized_pl is None:
+            continue
+        total_pnl += unrealized_pl
+        entry_budget = _position_entry_budget(row)
+        if entry_budget is not None and entry_budget > 0:
+            total_entry_budget += entry_budget
+    pnl_pct = total_pnl / total_entry_budget * 100.0 if total_entry_budget > 0 else 0.0
+    return pnl_pct, total_pnl
 
 
 def _held_minutes(row: dict[str, object], closed_at: datetime | None = None) -> float:
@@ -267,6 +284,21 @@ def _account_equity(config: CommodityConfig, client: OandaClient, state: dict[st
         return float(state.get("equity") or config.backtest_initial_balance)
     except (TypeError, ValueError):
         return config.backtest_initial_balance
+
+
+def _account_available_balance(config: CommodityConfig, client: OandaClient, state: dict[str, Any], equity: float | None = None) -> float:
+    if not config.paper_trade and config.has_oanda_credentials:
+        try:
+            available_balance = client.account_available_balance()
+            if available_balance >= 0:
+                state["available_balance"] = available_balance
+                return available_balance
+        except RuntimeError as exc:
+            state["last_account_available_balance_error"] = str(exc)
+    try:
+        return float(state.get("available_balance") or equity or state.get("equity") or config.backtest_initial_balance)
+    except (TypeError, ValueError):
+        return equity if equity is not None else config.backtest_initial_balance
 
 
 def _position_from_state(row: dict[str, object]) -> CommodityPosition | None:
@@ -694,6 +726,7 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     mode_text = "LIVE config" if not config.paper_trade else "PAPER"
     open_positions = snapshot.get("open_positions", [])
     open_positions = open_positions if isinstance(open_positions, list) else []
+    session_pnl_pct, session_pnl_amount = _session_pnl(open_positions)
 
     lines = [
         "🌾 Commodities Bot",
@@ -701,6 +734,8 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
         f"🕒 Scan: {_format_time(snapshot.get('time', ''))}",
         f"📊 Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count} | Instruments {snapshot.get('oanda_instrument_count', 0)}",
         f"📂 Open positions: {len(open_positions)} / {config.max_open_positions}",
+        f"💷 Total P&L: {_format_signed_percent(session_pnl_pct)} | {_format_signed_money(session_pnl_amount)}",
+        f"💰 Available Balance: {_format_money(snapshot.get('available_balance'))}",
     ]
     for row in open_positions[:4]:
         if isinstance(row, dict):
@@ -711,23 +746,6 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
         failed_symbols = ", ".join(str(item).split(":", 1)[0] for item in failures[:3]) if isinstance(failures, list) else "some symbols"
         suffix = "" if failure_count <= 3 else f" +{failure_count - 3} more"
         lines.append(f"⚠️ Fallbacks: {failure_count} OANDA fetch issue(s): {failed_symbols}{suffix}")
-
-    top_signals = snapshot.get("top_signals", [])
-    if isinstance(top_signals, list) and top_signals:
-        lines.append("")
-        lines.append("🏆 Top Signals")
-        for index, row in enumerate(top_signals[:5], start=1):
-            if not isinstance(row, dict):
-                continue
-            provider = str(row.get("data_provider", "fixture"))
-            instrument = row.get("oanda_instrument")
-            instrument_text = f" | {instrument}" if provider == "oanda" and instrument else ""
-            lines.append(
-                f"{index}. {_side_label(str(row.get('side', '')))} {row.get('symbol', '?')} | Score {float(row.get('score', 0.0)):.1f} | {_provider_label(provider)}{instrument_text}"
-            )
-            lines.append(f"   ↳ {_pretty_strategy(str(row.get('strategy', '')))}")
-    else:
-        lines.append("😴 No qualified signals this scan.")
 
     live_orders = snapshot.get("live_orders", [])
     if isinstance(live_orders, list) and live_orders:
@@ -952,6 +970,9 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     signals.sort(key=lambda item: item.score, reverse=True)
     live_orders, live_order_errors = _execute_live_orders(signals, config, client, state)
     open_positions = _state_position_rows(state)
+    equity = _account_equity(config, client, state)
+    available_balance = _account_available_balance(config, client, state, equity)
+    session_pnl_pct, session_pnl_amount = _session_pnl(open_positions)
     profit_updates = state.get("last_profit_protection_updates", [])
     profit_errors = state.get("last_profit_protection_errors", [])
     snapshot = {
@@ -966,6 +987,9 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "profit_protection_updates": profit_updates if isinstance(profit_updates, list) else [],
         "profit_protection_errors": profit_errors if isinstance(profit_errors, list) else [],
         "open_positions": open_positions,
+        "session_pnl_pct": round(session_pnl_pct, 4),
+        "session_pnl_amount": round(session_pnl_amount, 2),
+        "available_balance": round(available_balance, 2),
         "closed_positions": state.get("last_closed_positions", []),
         "top_signals": [
             {

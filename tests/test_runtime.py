@@ -23,6 +23,9 @@ class FakeOandaClient:
     def account_nav(self) -> float:
         return 10000.0
 
+    def account_available_balance(self) -> float:
+        return 9876.54
+
     def open_positions(self) -> set[str]:
         return set(self.open_position_symbols)
 
@@ -128,6 +131,16 @@ class RuntimeMessageTests(unittest.TestCase):
             "data_provider_counts": {"oanda": 7, "fixture": 5},
             "oanda_instrument_count": 123,
             "oanda_failures": ["COFFEE:OANDA request failed"],
+            "available_balance": 9876.54,
+            "open_positions": [
+                {
+                    "symbol": "SUGAR",
+                    "side": "LONG",
+                    "entry_budget": 100.0,
+                    "unrealized_pl": 12.5,
+                    "current_value": 112.5,
+                }
+            ],
             "top_signals": [
                 {
                     "symbol": "BRENT",
@@ -145,8 +158,11 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertIn("🌾 Commodities Bot", message)
         self.assertIn("📊 Data: OANDA 7/12", message)
         self.assertIn("⚠️ Fallbacks", message)
-        self.assertIn("🟢 LONG BRENT", message)
-        self.assertIn("📡 OANDA | BCO_USD", message)
+        self.assertIn("💷 Total P&L: +12.50% | +£12.50", message)
+        self.assertIn("💰 Available Balance: £9876.54", message)
+        self.assertIn("🟢 SUGAR LONG", message)
+        self.assertNotIn("🏆 Top Signals", message)
+        self.assertNotIn("BRENT", message)
 
     def test_heartbeat_gate_limits_routine_telegram_messages(self) -> None:
         self.assertTrue(_should_send_heartbeat({}, 1000.0, 3600))

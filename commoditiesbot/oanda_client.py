@@ -78,14 +78,33 @@ class OandaClient:
         details = self._instrument_details().get(instrument.upper(), {})
         return details.get("tradeUnitsPrecision", 0)
 
-    def account_nav(self) -> float:
+    def account_summary(self) -> dict[str, object]:
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/summary")
         account = payload.get("account", {})
         if not isinstance(account, dict):
-            return 0.0
+            return {}
+        return account
+
+    def account_nav(self) -> float:
+        account = self.account_summary()
         for key in ("NAV", "balance"):
+            value = account.get(key)
+            if value in (None, ""):
+                continue
             try:
-                return float(account.get(key) or 0.0)
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    def account_available_balance(self) -> float:
+        account = self.account_summary()
+        for key in ("marginAvailable", "availableMargin", "balance", "NAV"):
+            value = account.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
             except (TypeError, ValueError):
                 continue
         return 0.0
