@@ -624,11 +624,29 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
     equity = _account_equity(config, client, state)
     orders: list[dict[str, object]] = []
     market_statuses: dict[str, tuple[bool, str]] = {}
+    # Open-position drawdown halt: skip new entries if unrealized P&L vs equity exceeds threshold.
+    if config.open_drawdown_halt_pct > 0 and equity > 0:
+        total_open_pnl = sum(
+            (_position_unrealized_pl(row) or 0.0)
+            for row in rows
+            if isinstance(row, dict)
+        )
+        open_dd_pct = total_open_pnl / equity
+        if open_dd_pct <= -abs(config.open_drawdown_halt_pct):
+            errors.append({"stage": "halt", "reason": "open_drawdown_halt", "open_dd_pct": round(open_dd_pct, 4)})
+            state["open_positions"] = rows
+            state["last_live_orders"] = orders
+            state["last_live_order_errors"] = errors
+            return orders, errors
+    disabled = {s.upper() for s in config.disabled_symbols}
     for signal in signals:
         if len(orders) >= config.max_live_orders_per_scan:
             break
         if len(positions) >= config.max_open_positions or len(open_instruments) >= config.max_open_positions:
             break
+        if signal.symbol.upper() in disabled:
+            errors.append({"symbol": signal.symbol, "stage": "filter", "reason": "symbol_disabled"})
+            continue
         if str(signal.metadata.get("data_provider") or "") != "oanda":
             continue
         instrument = str(signal.metadata.get("oanda_instrument") or config.oanda_instrument_for(signal.symbol)).strip().upper()
@@ -935,7 +953,10 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     data_provider_counts = {"oanda": 0, "fixture": 0}
     oanda_failures: list[str] = []
     signals = []
+    disabled_scan = {s.upper() for s in config.disabled_symbols}
     for symbol in config.universe:
+        if symbol.upper() in disabled_scan:
+            continue
         candles = []
         data_provider = "fixture"
         oanda_instrument = config.oanda_instrument_for(symbol)

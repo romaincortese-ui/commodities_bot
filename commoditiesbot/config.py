@@ -142,6 +142,8 @@ class CommodityConfig:
     profit_lock_enabled: bool
     profit_lock_trigger_pct: float
     profit_lock_pullback_pct: float
+    disabled_symbols: tuple[str, ...]
+    open_drawdown_halt_pct: float
     backtest_initial_balance: float
     backtest_days: int
     backtest_data_provider: str
@@ -184,6 +186,8 @@ class CommodityConfig:
             profit_lock_enabled=_bool("PROFIT_LOCK_ENABLED", True),
             profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 15.0),
             profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 2.0),
+            disabled_symbols=_csv("DISABLED_SYMBOLS", ()),
+            open_drawdown_halt_pct=_float("OPEN_DRAWDOWN_HALT_PCT", 0.0),
             backtest_initial_balance=_float("BACKTEST_INITIAL_BALANCE", 10000.0),
             backtest_days=_int("BACKTEST_DAYS", 30),
             backtest_data_provider=os.environ.get("BACKTEST_DATA_PROVIDER", "fixture").strip().lower(),
