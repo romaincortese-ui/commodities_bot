@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from html import escape
@@ -129,6 +130,78 @@ def _session_pnl(rows: list[object]) -> tuple[float, float]:
             total_entry_budget += entry_budget
     pnl_pct = total_pnl / total_entry_budget * 100.0 if total_entry_budget > 0 else 0.0
     return pnl_pct, total_pnl
+
+
+def _allocated_balance(rows: list[object]) -> float:
+    total = 0.0
+    for row in rows:
+        if isinstance(row, dict):
+            total += _position_entry_budget(row) or 0.0
+    return total
+
+
+def _closed_trade_stats(state: dict[str, Any], closed_positions: list[object]) -> tuple[int, float | None]:
+    closed_count = int(state.get("runtime_closed_trade_count", 0) or 0)
+    if closed_positions:
+        closed_count += len([row for row in closed_positions if isinstance(row, dict)])
+        state["runtime_closed_trade_count"] = closed_count
+    pnls: list[float] = []
+    for row in state.get("last_profit_protection_updates", []):
+        if isinstance(row, dict):
+            value = _position_unrealized_pl(row)
+            if value is not None:
+                pnls.append(value)
+    if not pnls:
+        return closed_count, None
+    gross_profit = sum(value for value in pnls if value > 0)
+    gross_loss = -sum(value for value in pnls if value < 0)
+    if gross_loss > 0:
+        return closed_count, gross_profit / gross_loss
+    return closed_count, 999.0 if gross_profit > 0 else 0.0
+
+
+def _runtime_status_payload(config: CommodityConfig, state: dict[str, Any], snapshot: dict[str, object]) -> dict[str, object]:
+    open_positions = snapshot.get("open_positions", [])
+    open_rows = open_positions if isinstance(open_positions, list) else []
+    closed_positions = snapshot.get("closed_positions", [])
+    closed_rows = closed_positions if isinstance(closed_positions, list) else []
+    total_trades, profit_factor = _closed_trade_stats(state, closed_rows)
+    account_balance = _float_or_none(snapshot.get("account_balance"))
+    available_balance = _float_or_none(snapshot.get("available_balance"))
+    allocated_balance = _float_or_none(snapshot.get("allocated_balance"))
+    if allocated_balance is None:
+        allocated_balance = _allocated_balance(open_rows)
+    return {
+        "service": "commodities",
+        "state": "running",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "paper_trade": bool(snapshot.get("paper_trade")),
+        "account_balance": account_balance,
+        "account_nav": account_balance,
+        "available_balance": available_balance,
+        "allocated_balance": allocated_balance,
+        "unrealized_pl": _float_or_none(snapshot.get("session_pnl_amount")),
+        "pnl_amount": _float_or_none(snapshot.get("session_pnl_amount")),
+        "pnl_pct": _float_or_none(snapshot.get("session_pnl_pct")),
+        "open_trades": len(open_rows),
+        "open_positions": open_rows,
+        "total_trades": total_trades + len(open_rows),
+        "profit_factor": profit_factor,
+        "last_scan": snapshot,
+    }
+
+
+def _publish_runtime_status(config: CommodityConfig, payload: dict[str, object]) -> bool:
+    if not config.redis_url or not config.runtime_status_redis_key or config.runtime_status_ttl_seconds <= 0:
+        return False
+    try:
+        import redis
+
+        client = redis.from_url(config.redis_url, socket_connect_timeout=5, socket_timeout=5)
+        client.set(config.runtime_status_redis_key, json.dumps(payload, default=str), ex=config.runtime_status_ttl_seconds)
+        return True
+    except Exception:
+        return False
 
 
 def _held_minutes(row: dict[str, object], closed_at: datetime | None = None) -> float:
@@ -990,6 +1063,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     snapshot = {
         "time": datetime.now(timezone.utc).isoformat(),
         "paper_trade": config.paper_trade,
+        "account_balance": round(equity, 2),
         "configured_symbols": list(config.universe),
         "oanda_instrument_count": instrument_count,
         "data_provider_counts": data_provider_counts,
@@ -1002,6 +1076,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "session_pnl_pct": round(session_pnl_pct, 4),
         "session_pnl_amount": round(session_pnl_amount, 2),
         "available_balance": round(available_balance, 2),
+        "allocated_balance": round(_allocated_balance(open_positions), 2),
         "closed_positions": state.get("last_closed_positions", []),
         "top_signals": [
             {
@@ -1029,6 +1104,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         state[LAST_HEARTBEAT_AT_KEY] = now_ts
         state["last_telegram_heartbeat_time"] = snapshot["time"]
         notifier.send(message)
+    _publish_runtime_status(config, _runtime_status_payload(config, state, snapshot))
     state_store.save(state)
     return snapshot
 

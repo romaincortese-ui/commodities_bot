@@ -1,2 +1,1 @@
-# The MVP intentionally uses only the Python standard library.
-# Add requests/httpx later if the OANDA client is moved away from urllib.
+redis>=5.0.0

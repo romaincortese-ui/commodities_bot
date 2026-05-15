@@ -155,6 +155,9 @@ class CommodityConfig:
     noaa_cdo_token: str
     fred_api_key: str
     run_once: bool
+    redis_url: str
+    runtime_status_redis_key: str
+    runtime_status_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> "CommodityConfig":
@@ -199,6 +202,9 @@ class CommodityConfig:
             noaa_cdo_token=os.environ.get("NOAA_CDO_TOKEN", "").strip(),
             fred_api_key=os.environ.get("FRED_API_KEY", "").strip(),
             run_once=_bool("RUN_ONCE", False),
+            redis_url=os.environ.get("REDIS_URL", "").strip(),
+            runtime_status_redis_key=os.environ.get("COMMODITIES_RUNTIME_STATUS_REDIS_KEY", "commodities_bot_runtime_status").strip(),
+            runtime_status_ttl_seconds=_int("COMMODITIES_RUNTIME_STATUS_TTL_SECONDS", 1800),
         )
 
     @property
