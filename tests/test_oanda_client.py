@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from commoditiesbot.config import CommodityConfig
+import commoditiesbot.oanda_client as oanda_module
 from commoditiesbot.oanda_client import OandaClient
 
 
@@ -61,6 +63,21 @@ class OandaClientTests(unittest.TestCase):
         self.assertEqual(method, "PUT")
         self.assertEqual(path, "/v3/accounts//trades/159/close")
         self.assertEqual(payload, {"units": "ALL"})
+
+    def test_request_wraps_read_timeout_as_runtime_error(self) -> None:
+        config = replace(CommodityConfig.from_env(), oanda_account_id="acct", oanda_api_token="token")
+        client = OandaClient(config)
+
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutError("The read operation timed out")
+
+        original_urlopen = oanda_module.urlopen
+        oanda_module.urlopen = raise_timeout
+        try:
+            with self.assertRaisesRegex(RuntimeError, "OANDA request timed out"):
+                client._request("GET", "/v3/accounts/acct/summary")
+        finally:
+            oanda_module.urlopen = original_urlopen
 
 
 if __name__ == "__main__":

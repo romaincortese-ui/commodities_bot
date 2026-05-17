@@ -46,6 +46,8 @@ class OandaClient:
             raise RuntimeError(f"OANDA request failed: {exc.code} {detail}") from exc
         except URLError as exc:
             raise RuntimeError(f"OANDA request failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(f"OANDA request timed out: {exc}") from exc
 
     def tradeable_instruments(self) -> list[str]:
         return list(self._instrument_details().keys())
