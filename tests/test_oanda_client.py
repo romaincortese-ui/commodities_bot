@@ -64,6 +64,23 @@ class OandaClientTests(unittest.TestCase):
         self.assertEqual(path, "/v3/accounts//trades/159/close")
         self.assertEqual(payload, {"units": "ALL"})
 
+    def test_candles_can_include_incomplete_current_bar(self) -> None:
+        client = FakeOandaClient(
+            {
+                "candles": [
+                    {"complete": True, "time": "2026-05-14T21:00:00Z", "mid": {"o": "4.40", "h": "4.50", "l": "4.35", "c": "4.46"}, "volume": 100},
+                    {"complete": False, "time": "2026-05-17T21:00:00Z", "mid": {"o": "4.46", "h": "4.70", "l": "4.45", "c": "4.67"}, "volume": 50},
+                ]
+            }
+        )
+
+        complete_only = client.candles("CORN_USD")
+        with_current = client.candles("CORN_USD", include_incomplete=True)
+
+        self.assertEqual(len(complete_only), 1)
+        self.assertEqual(len(with_current), 2)
+        self.assertEqual(with_current[-1].close, 4.67)
+
     def test_request_wraps_read_timeout_as_runtime_error(self) -> None:
         config = replace(CommodityConfig.from_env(), oanda_account_id="acct", oanda_api_token="token")
         client = OandaClient(config)

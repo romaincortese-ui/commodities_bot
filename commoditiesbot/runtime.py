@@ -10,7 +10,7 @@ from commoditiesbot.backtest.data import FixtureMarketDataProvider
 from commoditiesbot.config import CommodityConfig, SYMBOL_BUCKETS
 from commoditiesbot.models import CommodityPosition, CommoditySignal
 from commoditiesbot.oanda_client import OandaClient
-from commoditiesbot.risk import can_open, position_from_signal
+from commoditiesbot.risk import bucket_risk_pct, can_open, open_risk_pct, position_from_signal
 from commoditiesbot.state import StateStore
 from commoditiesbot.strategies import generate_signal
 from commoditiesbot.telegram import TelegramNotifier
@@ -257,6 +257,16 @@ def _format_live_issue(row: dict[str, object]) -> str:
     stage = row.get("stage") or "live"
     detail = row.get("reason") or row.get("error") or "blocked"
     text = str(detail)
+    if stage == "risk" and detail == "portfolio_risk_cap":
+        current = _float_or_none(row.get("open_risk_pct"))
+        cap = _float_or_none(row.get("max_total_risk_pct"))
+        if current is not None and cap is not None:
+            text = f"{text} ({current * 100.0:.1f}%/{cap * 100.0:.1f}%)"
+    elif stage == "risk" and detail == "bucket_risk_cap":
+        current = _float_or_none(row.get("bucket_risk_pct"))
+        cap = _float_or_none(row.get("bucket_cap_pct"))
+        if current is not None and cap is not None:
+            text = f"{text} ({current * 100.0:.1f}%/{cap * 100.0:.1f}%)"
     if len(text) > 160:
         text = text[:157] + "..."
     return f"{subject} | {stage}: {text}"
@@ -736,7 +746,15 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             continue
         allowed, reason = can_open(signal, positions, equity, config)
         if not allowed:
-            errors.append({"symbol": signal.symbol, "stage": "risk", "reason": reason})
+            error = {"symbol": signal.symbol, "stage": "risk", "reason": reason}
+            if reason == "portfolio_risk_cap":
+                error["open_risk_pct"] = round(open_risk_pct(positions, equity), 4)
+                error["max_total_risk_pct"] = round(config.max_total_risk_pct, 4)
+            elif reason == "bucket_risk_cap":
+                bucket_risks = bucket_risk_pct(positions, equity)
+                error["bucket_risk_pct"] = round(bucket_risks.get(signal.bucket, 0.0), 4)
+                error["bucket_cap_pct"] = round(config.bucket_cap(signal.bucket), 4)
+            errors.append(error)
             continue
         position = position_from_signal(signal, equity, config)
         if position.units <= 0:
@@ -838,6 +856,12 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
         suffix = "" if failure_count <= 3 else f" +{failure_count - 3} more"
         lines.append(f"⚠️ Fallbacks: {failure_count} OANDA fetch issue(s): {failed_symbols}{suffix}")
 
+    disabled_symbols = snapshot.get("disabled_symbols", [])
+    if isinstance(disabled_symbols, list) and disabled_symbols:
+        names = ", ".join(str(symbol) for symbol in disabled_symbols[:4])
+        suffix = "" if len(disabled_symbols) <= 4 else f" +{len(disabled_symbols) - 4} more"
+        lines.append(f"🚫 Disabled: {len(disabled_symbols)}/{len(config.universe)} symbols: {names}{suffix}")
+
     live_orders = snapshot.get("live_orders", [])
     if isinstance(live_orders, list) and live_orders:
         lines.append("")
@@ -857,7 +881,7 @@ def _format_scan_message(snapshot: dict[str, object], config: CommodityConfig) -
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
         lines.append(f"⚠️ Live order issue(s): {len(live_errors)}")
-        for row in live_errors[:2]:
+        for row in live_errors[:3]:
             if isinstance(row, dict):
                 lines.append(f"   ↳ {_format_live_issue(row)}")
 
@@ -1016,9 +1040,11 @@ def _should_send_heartbeat(state: dict[str, object], now_ts: float, heartbeat_se
 def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
     instrument_count = 0
+    tradeable_instruments: set[str] = set()
     if config.has_oanda_credentials:
         try:
-            instrument_count = len(client.tradeable_instruments())
+            tradeable_instruments = {instrument.upper() for instrument in client.tradeable_instruments()}
+            instrument_count = len(tradeable_instruments)
         except RuntimeError:
             instrument_count = 0
 
@@ -1027,6 +1053,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
     oanda_failures: list[str] = []
     signals = []
     disabled_scan = {s.upper() for s in config.disabled_symbols}
+    disabled_symbols = [symbol for symbol in config.universe if symbol.upper() in disabled_scan]
     for symbol in config.universe:
         if symbol.upper() in disabled_scan:
             continue
@@ -1034,10 +1061,13 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         data_provider = "fixture"
         oanda_instrument = config.oanda_instrument_for(symbol)
         if config.has_oanda_credentials and oanda_instrument:
-            try:
-                candles = client.candles(oanda_instrument, count=max(90, config.backtest_days + 45), granularity="D")
-            except RuntimeError as exc:
-                oanda_failures.append(f"{symbol}:{exc}")
+            if tradeable_instruments and oanda_instrument.upper() not in tradeable_instruments:
+                oanda_failures.append(f"{symbol}:instrument_not_in_account")
+            else:
+                try:
+                    candles = client.candles(oanda_instrument, count=max(90, config.backtest_days + 45), granularity="D", include_incomplete=True)
+                except RuntimeError as exc:
+                    oanda_failures.append(f"{symbol}:{exc}")
             if len(candles) >= 45:
                 data_provider = "oanda"
             else:
@@ -1065,6 +1095,7 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
         "paper_trade": config.paper_trade,
         "account_balance": round(equity, 2),
         "configured_symbols": list(config.universe),
+        "disabled_symbols": disabled_symbols,
         "oanda_instrument_count": instrument_count,
         "data_provider_counts": data_provider_counts,
         "oanda_failures": oanda_failures[:5],

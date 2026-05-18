@@ -184,6 +184,29 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertNotIn("🏆 Top Signals", message)
         self.assertNotIn("COCOA | Score", message)
 
+    def test_scan_message_reports_disabled_symbols_and_risk_caps(self) -> None:
+        config = replace(CommodityConfig.from_env(), disabled_symbols=("COFFEE", "COCOA", "COTTON"))
+        snapshot = {
+            "time": "2026-05-18T14:58:00+00:00",
+            "data_provider_counts": {"oanda": 7, "fixture": 2},
+            "oanda_instrument_count": 123,
+            "disabled_symbols": ["COFFEE", "COCOA", "COTTON"],
+            "available_balance": 48.53,
+            "open_positions": [],
+            "live_order_errors": [
+                {"symbol": "NATGAS", "stage": "risk", "reason": "portfolio_risk_cap", "open_risk_pct": 0.0342, "max_total_risk_pct": 0.0300},
+                {"symbol": "WTI", "stage": "risk", "reason": "portfolio_risk_cap", "open_risk_pct": 0.0342, "max_total_risk_pct": 0.0300},
+                {"symbol": "BRENT", "stage": "risk", "reason": "portfolio_risk_cap", "open_risk_pct": 0.0342, "max_total_risk_pct": 0.0300},
+            ],
+        }
+
+        message = _format_scan_message(snapshot, config)
+
+        self.assertIn("🚫 Disabled: 3/12 symbols: COFFEE, COCOA, COTTON", message)
+        self.assertIn("NATGAS | risk: portfolio_risk_cap (3.4%/3.0%)", message)
+        self.assertIn("WTI | risk: portfolio_risk_cap (3.4%/3.0%)", message)
+        self.assertIn("BRENT | risk: portfolio_risk_cap (3.4%/3.0%)", message)
+
     def test_heartbeat_gate_limits_routine_telegram_messages(self) -> None:
         self.assertTrue(_should_send_heartbeat({}, 1000.0, 21600))
         self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 21600))

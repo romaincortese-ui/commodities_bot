@@ -179,7 +179,7 @@ class OandaClient:
     def close_trade(self, trade_id: str) -> dict[str, object]:
         return self._request("PUT", f"/v3/accounts/{self.config.oanda_account_id}/trades/{trade_id}/close", {"units": "ALL"})
 
-    def candles(self, instrument: str, count: int = 120, granularity: str = "D") -> list[Candle]:
+    def candles(self, instrument: str, count: int = 120, granularity: str = "D", *, include_incomplete: bool = False) -> list[Candle]:
         params = urlencode({"count": count, "granularity": granularity, "price": "M"})
         payload = self._request("GET", f"/v3/instruments/{instrument}/candles?{params}")
         rows = payload.get("candles", [])
@@ -187,7 +187,9 @@ class OandaClient:
         if not isinstance(rows, list):
             return candles
         for row in rows:
-            if not isinstance(row, dict) or not row.get("complete", True):
+            if not isinstance(row, dict):
+                continue
+            if not row.get("complete", True) and not include_incomplete:
                 continue
             mid = row.get("mid")
             if not isinstance(mid, dict):
