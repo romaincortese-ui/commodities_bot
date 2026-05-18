@@ -569,7 +569,7 @@ def _apply_profit_protection(config: CommodityConfig, client: OandaClient, state
             kept_rows.append(row)
             continue
         pullback_pct = peak_pnl_pct - pnl_pct
-        if peak_pnl_pct < max(0.0, config.profit_lock_trigger_pct) or pullback_pct < max(0.0, config.profit_lock_pullback_pct) or pnl_pct <= 0.0:
+        if peak_pnl_pct < max(0.0, config.profit_lock_trigger_pct) or pullback_pct < max(0.0, config.profit_lock_pullback_pct):
             kept_rows.append(row)
             continue
         try:

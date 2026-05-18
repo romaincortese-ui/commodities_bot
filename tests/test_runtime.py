@@ -384,6 +384,34 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertAlmostEqual(float(updates[0]["peak_pnl_pct"]), 39.0, places=4)
         self.assertAlmostEqual(float(updates[0]["pullback_from_peak_pct"]), 2.0, places=4)
 
+    def test_profit_protection_closes_modest_winner_after_breakeven_loss(self) -> None:
+        config = replace(_live_config(), profit_lock_trigger_pct=3.0, profit_lock_pullback_pct=1.5)
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "NATGAS",
+                    "instrument": "NATGAS_USD",
+                    "side": "LONG",
+                    "entry_price": 2.8,
+                    "units": 1.0,
+                    "entry_budget": 4.90,
+                    "unrealized_pl": -0.08281,
+                    "order_id": "trade-natgas",
+                    "metadata": {"peak_pnl_pct": 3.31},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+
+        updates, errors = _apply_profit_protection(config, client, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(client.closed_trades, ["trade-natgas"])
+        self.assertEqual(state["open_positions"], [])
+        self.assertEqual(updates[0]["exit_reason"], "peak_pullback_profit_lock")
+        self.assertAlmostEqual(float(updates[0]["peak_pnl_pct"]), 3.31, places=4)
+        self.assertGreater(float(updates[0]["pullback_from_peak_pct"]), 4.9)
+
     def test_profit_protection_records_new_peak_without_closing(self) -> None:
         config = replace(_live_config(), profit_lock_trigger_pct=15.0, profit_lock_pullback_pct=2.0)
         state: dict[str, object] = {

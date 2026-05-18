@@ -17,6 +17,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.universe, DEFAULT_UNIVERSE)
         self.assertEqual(config.scan_interval_seconds, 300)
         self.assertEqual(config.heartbeat_seconds, 21600)
+        self.assertTrue(config.profit_lock_enabled)
+        self.assertEqual(config.profit_lock_trigger_pct, 3.0)
+        self.assertEqual(config.profit_lock_pullback_pct, 1.5)
 
     def test_list_variables_accept_commas_or_whitespace(self) -> None:
         env = {"COMMODITIES_UNIVERSE": "WTI BRENT,NATGAS", "COMMODITIES_STRATEGIES": "CRUDE NATGAS"}
@@ -38,6 +41,14 @@ class ConfigTests(unittest.TestCase):
             config = CommodityConfig.from_env()
         self.assertEqual(config.oanda_instrument_for("WTI"), "WTICO_USD")
         self.assertEqual(config.oanda_instrument_for("GASOLINE"), "RB_USD")
+
+    def test_profit_lock_env_overrides_defaults(self) -> None:
+        env = {"PROFIT_LOCK_ENABLED": "false", "PROFIT_LOCK_TRIGGER_PCT": "4.5", "PROFIT_LOCK_PULLBACK_PCT": "2.25"}
+        with patch.dict(os.environ, env, clear=True):
+            config = CommodityConfig.from_env()
+        self.assertFalse(config.profit_lock_enabled)
+        self.assertEqual(config.profit_lock_trigger_pct, 4.5)
+        self.assertEqual(config.profit_lock_pullback_pct, 2.25)
 
 
 if __name__ == "__main__":
