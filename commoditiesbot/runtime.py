@@ -539,6 +539,8 @@ def _update_peak_pnl(row: dict[str, object], now: datetime) -> tuple[float | Non
         return None, None
     metadata = _metadata_dict(row)
     peak_pnl_pct = _float_or_none(metadata.get("peak_pnl_pct"))
+    if peak_pnl_pct is None and pnl_pct <= 0.0:
+        return pnl_pct, None
     if peak_pnl_pct is None or pnl_pct > peak_pnl_pct:
         peak_pnl_pct = pnl_pct
         metadata["peak_pnl_pct"] = peak_pnl_pct
