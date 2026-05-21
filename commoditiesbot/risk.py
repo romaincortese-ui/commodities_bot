@@ -28,7 +28,7 @@ def risk_pct_for_signal(signal: CommoditySignal, config: CommodityConfig) -> flo
     if signal.event_risk == "HIGH":
         quality_mult *= 0.50
     pct = min(base * quality_mult, config.bucket_cap(signal.bucket) * 0.45)
-    return pct * max(0.0, _env_float("RISK_AMOUNT_MULTIPLIER", 1.0))
+    return pct * max(0.0, _env_float("RISK_AMOUNT_MULTIPLIER", 1.25))
 
 
 
