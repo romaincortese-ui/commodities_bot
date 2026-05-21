@@ -20,6 +20,17 @@ class BacktestTests(unittest.TestCase):
         self.assertGreater(result.total_pnl, 0)
         self.assertGreater(result.profit_factor, 1.0)
 
+    def test_profit_lock_backtest_improves_fixture_pnl(self) -> None:
+        env = dict(os.environ)
+        env["BACKTEST_DAYS"] = "30"
+        provider = FixtureMarketDataProvider(days=90)
+        with patch.dict(os.environ, {**env, "PROFIT_LOCK_ENABLED": "false"}, clear=True):
+            baseline = BacktestEngine(CommodityConfig.from_env(), provider).run()
+        with patch.dict(os.environ, {**env, "PROFIT_LOCK_ENABLED": "true"}, clear=True):
+            candidate = BacktestEngine(CommodityConfig.from_env(), provider).run()
+        self.assertGreater(candidate.total_pnl, baseline.total_pnl)
+        self.assertTrue(any(trade.exit_reason == "peak_pullback_profit_lock" for trade in candidate.trades))
+
 
 if __name__ == "__main__":
     unittest.main()
