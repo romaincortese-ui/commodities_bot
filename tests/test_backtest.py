@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from commoditiesbot.backtest import run_backtest
 from commoditiesbot.backtest.data import FixtureMarketDataProvider
 from commoditiesbot.backtest.engine import BacktestEngine
 from commoditiesbot.config import CommodityConfig
@@ -30,6 +32,30 @@ class BacktestTests(unittest.TestCase):
             candidate = BacktestEngine(CommodityConfig.from_env(), provider).run()
         self.assertGreater(candidate.total_pnl, baseline.total_pnl)
         self.assertTrue(any(trade.exit_reason == "peak_pullback_profit_lock" for trade in candidate.trades))
+
+    def test_backtest_command_succeeds_when_metrics_are_negative(self) -> None:
+        result = SimpleNamespace(
+            data_provider="fixture",
+            total_trades=3,
+            wins=1,
+            losses=2,
+            win_rate=1 / 3,
+            total_pnl=-12.5,
+            return_pct=-0.00125,
+            profit_factor=0.7,
+            max_drawdown_pct=-0.004,
+            by_bucket={"ENERGY": -12.5},
+        )
+
+        class FakeBacktestEngine:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def run(self):
+                return result
+
+        with patch.object(run_backtest, "BacktestEngine", FakeBacktestEngine), patch.object(run_backtest, "write_report"):
+            self.assertEqual(run_backtest.main(), 0)
 
 
 if __name__ == "__main__":

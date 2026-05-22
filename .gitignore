@@ -4,4 +4,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 backtest_output/
+backtest_output_*/
 runtime_state.json
