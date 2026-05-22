@@ -179,6 +179,20 @@ class OandaClient:
     def close_trade(self, trade_id: str) -> dict[str, object]:
         return self._request("PUT", f"/v3/accounts/{self.config.oanda_account_id}/trades/{trade_id}/close", {"units": "ALL"})
 
+    def recent_trade_close(self, trade_id: str, count: int = 100) -> dict[str, object] | None:
+        target = str(trade_id or "").strip()
+        if not target:
+            return None
+        payload = self._request(
+            "GET",
+            f"/v3/accounts/{self.config.oanda_account_id}/transactions?{urlencode({'count': max(1, min(500, int(count))), 'type': 'ORDER_FILL'})}",
+        )
+        transactions = payload.get("transactions", []) if isinstance(payload, dict) else []
+        for transaction in reversed(transactions if isinstance(transactions, list) else []):
+            if isinstance(transaction, dict) and target in _transaction_trade_ids(transaction):
+                return transaction
+        return None
+
     def candles(self, instrument: str, count: int = 120, granularity: str = "D", *, include_incomplete: bool = False) -> list[Candle]:
         params = urlencode({"count": count, "granularity": granularity, "price": "M"})
         payload = self._request("GET", f"/v3/instruments/{instrument}/candles?{params}")
@@ -244,6 +258,21 @@ def _int_or_default(value: object, default: int) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _transaction_trade_ids(transaction: dict[str, object]) -> set[str]:
+    ids: set[str] = set()
+    for key in ("tradesClosed", "tradesReduced"):
+        rows = transaction.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("tradeID"):
+                    ids.add(str(row["tradeID"]))
+    for key in ("tradeClosed", "tradeReduced", "tradeOpened"):
+        row = transaction.get(key)
+        if isinstance(row, dict) and row.get("tradeID"):
+            ids.add(str(row["tradeID"]))
+    return ids
 
 
 def _format_units(value: float, precision: int) -> str:

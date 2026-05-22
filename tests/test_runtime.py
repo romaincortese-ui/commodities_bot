@@ -16,6 +16,7 @@ class FakeOandaClient:
         self.open_position_symbols: set[str] = set()
         self.open_trade_rows: list[dict[str, object]] = []
         self.closed_trades: list[str] = []
+        self.recent_close: dict[str, object] | None = None
         self.bid = 79.99
         self.ask = 80.0
         self.order_response: dict[str, object] = {"orderFillTransaction": {"id": "fill-1", "price": "80.125", "tradeOpened": {"tradeID": "trade-1"}}}
@@ -60,6 +61,9 @@ class FakeOandaClient:
     def close_trade(self, trade_id: str) -> dict[str, object]:
         self.closed_trades.append(trade_id)
         return {"orderFillTransaction": {"tradeClosed": {"tradeID": trade_id}}}
+
+    def recent_trade_close(self, trade_id: str) -> dict[str, object] | None:
+        return self.recent_close
 
 
 class FakeNotifier:
@@ -534,7 +538,75 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(parse_mode, "HTML")
         self.assertIn("<b>Crude Inventory Trend Closed at broker</b> | WTI", message)
         self.assertIn("Exit: broker reported closed", message)
-        self.assertIn("Reason: OANDA position no longer open", message)
+        self.assertIn("P&L: unavailable from broker close lookup", message)
+        self.assertIn("Reason: broker sync: OANDA no longer reports this trade open", message)
+        self.assertIn("Next entry: paused for this symbol", message)
+
+    def test_broker_closed_loss_enriches_alert_and_blocks_immediate_reentry(self) -> None:
+        config = _live_config()
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "NATGAS",
+                    "instrument": "NATGAS_USD",
+                    "side": "LONG",
+                    "strategy": "NATGAS_WEATHER_STORAGE",
+                    "entry_price": 3.023,
+                    "units": 1.0,
+                    "sl_price": 2.98,
+                    "tp_price": 3.12,
+                    "opened_at": "2026-05-22T12:00:00+00:00",
+                    "entry_budget": 4.60,
+                    "risk_amount": 4.60,
+                    "bucket": "ENERGY",
+                    "order_id": "trade-natgas",
+                    "metadata": {},
+                }
+            ]
+        }
+        signal = CommoditySignal(
+            symbol="NATGAS",
+            side="LONG",
+            strategy="NATGAS_WEATHER_STORAGE",
+            score=91.0,
+            price=3.03,
+            sl_price=2.98,
+            tp_price=3.12,
+            atr=0.05,
+            expected_hold_bars=4,
+            data_freshness_minutes=10.0,
+            event_risk="NORMAL",
+            bucket="ENERGY",
+            metadata={"data_provider": "oanda", "oanda_instrument": "NATGAS_USD", "time": datetime(2026, 5, 22, tzinfo=timezone.utc)},
+        )
+        client = FakeOandaClient()
+        client.recent_close = {
+            "id": "99",
+            "type": "ORDER_FILL",
+            "reason": "STOP_LOSS_ORDER",
+            "price": "2.99000",
+            "time": "2026-05-22T13:14:00Z",
+            "tradesClosed": [{"tradeID": "trade-natgas", "realizedPL": "-0.09"}],
+        }
+        notifier = FakeNotifier()
+
+        orders, errors = _execute_live_orders([signal], config, client, state)
+        _send_trade_lifecycle_alerts(notifier, orders, state["last_closed_positions"])
+
+        self.assertEqual(orders, [])
+        self.assertEqual(client.orders, [])
+        self.assertEqual(errors[0]["stage"], "cooldown")
+        self.assertEqual(errors[0]["reason"], "recent_broker_close_cooldown")
+        self.assertIn("NATGAS", state["reentry_cooldowns"])
+        closed = state["last_closed_positions"][0]
+        self.assertEqual(closed["broker_close_reason"], "stop_loss_order")
+        self.assertEqual(closed["realized_pl"], -0.09)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("Exit: 2.99000", message)
+        self.assertIn("P&L: -£0.09", message)
+        self.assertIn("Reason: broker stop-loss order", message)
+        self.assertIn("Next entry: paused for this symbol", message)
 
     def test_live_config_skips_order_when_oanda_market_is_not_tradeable(self) -> None:
         config = _live_config()

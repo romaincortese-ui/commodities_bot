@@ -143,6 +143,7 @@ class CommodityConfig:
     profit_lock_trigger_pct: float
     profit_lock_pullback_pct: float
     disabled_symbols: tuple[str, ...]
+    broker_reentry_cooldown_minutes: int
     open_drawdown_halt_pct: float
     backtest_initial_balance: float
     backtest_days: int
@@ -190,6 +191,7 @@ class CommodityConfig:
             profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 3.0),
             profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 1.5),
             disabled_symbols=_csv("DISABLED_SYMBOLS", ()),
+            broker_reentry_cooldown_minutes=max(0, _int("COMMODITIES_BROKER_REENTRY_COOLDOWN_MINUTES", 360)),
             open_drawdown_halt_pct=_float("OPEN_DRAWDOWN_HALT_PCT", 0.0),
             backtest_initial_balance=_float("BACKTEST_INITIAL_BALANCE", 10000.0),
             backtest_days=_int("BACKTEST_DAYS", 30),

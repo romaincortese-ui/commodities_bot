@@ -64,6 +64,23 @@ class OandaClientTests(unittest.TestCase):
         self.assertEqual(path, "/v3/accounts//trades/159/close")
         self.assertEqual(payload, {"units": "ALL"})
 
+    def test_recent_trade_close_finds_matching_order_fill(self) -> None:
+        client = FakeOandaClient(
+            {
+                "transactions": [
+                    {"id": "98", "type": "ORDER_FILL", "tradesClosed": [{"tradeID": "158", "realizedPL": "1.20"}]},
+                    {"id": "99", "type": "ORDER_FILL", "reason": "STOP_LOSS_ORDER", "tradesClosed": [{"tradeID": "159", "realizedPL": "-2.10"}]},
+                ]
+            }
+        )
+
+        close = client.recent_trade_close("159")
+
+        self.assertIsNotNone(close)
+        assert close is not None
+        self.assertEqual(close["reason"], "STOP_LOSS_ORDER")
+        self.assertIn("/transactions?", client.requests[-1][1])
+
     def test_candles_can_include_incomplete_current_bar(self) -> None:
         client = FakeOandaClient(
             {

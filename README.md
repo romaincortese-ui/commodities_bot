@@ -64,3 +64,7 @@ Live go/no-go should require:
 ## Live Profit Protection
 
 Live OANDA positions track their best unrealized P&L in runtime state after every open-trade sync. By default, `PROFIT_LOCK_TRIGGER_PCT=3.0` arms the lock once a trade has been at least 3% profitable, and `PROFIT_LOCK_PULLBACK_PCT=1.5` closes the trade at market if it gives back 1.5 percentage points from that peak. The close still fires if the pullback happens quickly enough to move the trade below breakeven before the next scan.
+
+Broker-sync closures are reconciled against recent OANDA close transactions when available, so Telegram can show the broker reason and realized P&L instead of only saying the position is no longer open. If OANDA cannot confirm a profitable take-profit close, the bot pauses fresh entries for that symbol for `COMMODITIES_BROKER_REENTRY_COOLDOWN_MINUTES` minutes to avoid closing and reopening the same setup in the same scan.
+
+The default risk sizing multiplier is `RISK_AMOUNT_MULTIPLIER=1.35`; portfolio and bucket caps still apply before any live order is sent.

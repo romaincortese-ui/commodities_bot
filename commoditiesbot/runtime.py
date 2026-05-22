@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any
 
@@ -72,6 +72,19 @@ def _format_signed_percent(value: object) -> str:
         return "n/a"
     sign = "+" if amount >= 0 else ""
     return f"{sign}{amount:.2f}%"
+
+
+def _human_close_reason(value: object) -> str:
+    text = str(value or "").strip().lower()
+    mapping = {
+        "stop_loss_order": "broker stop-loss order",
+        "take_profit_order": "broker take-profit order",
+        "market_order": "broker market close",
+        "trade_close": "broker trade close",
+        "broker_reconciliation": "broker sync: OANDA no longer reports this trade open",
+        "not_in_oanda_open_positions": "broker sync: OANDA no longer reports this trade open",
+    }
+    return mapping.get(text, text.replace("_", " ") if text else "broker sync: OANDA no longer reports this trade open")
 
 
 def _position_entry_budget(row: dict[str, object]) -> float | None:
@@ -267,6 +280,8 @@ def _format_live_issue(row: dict[str, object]) -> str:
         cap = _float_or_none(row.get("bucket_cap_pct"))
         if current is not None and cap is not None:
             text = f"{text} ({current * 100.0:.1f}%/{cap * 100.0:.1f}%)"
+    elif stage == "cooldown" and row.get("until"):
+        text = f"{text} until {_format_time(row.get('until'))}"
     if len(text) > 160:
         text = text[:157] + "..."
     return f"{subject} | {stage}: {text}"
@@ -497,6 +512,58 @@ def _row_from_oanda_trade(config: CommodityConfig, trade: dict[str, object], exi
     }
 
 
+def _trade_close_parts(transaction: dict[str, object]) -> list[dict[str, object]]:
+    parts: list[dict[str, object]] = []
+    for key in ("tradesClosed", "tradesReduced"):
+        rows = transaction.get(key)
+        if isinstance(rows, list):
+            parts.extend(row for row in rows if isinstance(row, dict))
+    for key in ("tradeClosed", "tradeReduced"):
+        row = transaction.get(key)
+        if isinstance(row, dict):
+            parts.append(row)
+    return parts
+
+
+def _enrich_row_from_close(row: dict[str, object], close: dict[str, object]) -> None:
+    transaction = close.get("orderFillTransaction") if isinstance(close.get("orderFillTransaction"), dict) else close
+    if not isinstance(transaction, dict):
+        return
+    reason = str(transaction.get("reason") or "").strip().lower()
+    if reason:
+        row["exit_reason"] = reason
+        row["broker_close_reason"] = reason
+    closed_at = transaction.get("time")
+    if closed_at:
+        row["closed_at"] = str(closed_at).replace("Z", "+00:00")
+    price = _float_or_none(transaction.get("price"))
+    if price is not None and price > 0:
+        row["exit_price"] = price
+    close_parts = _trade_close_parts(transaction)
+    realized_values = [_float_or_none(part.get("realizedPL")) for part in close_parts]
+    if not any(value is not None for value in realized_values):
+        realized_values = [_float_or_none(transaction.get("pl"))]
+    if any(value is not None for value in realized_values):
+        realized = sum(value for value in realized_values if value is not None)
+        row["realized_pl"] = realized
+        row["unrealized_pl"] = realized
+        entry_budget = _position_entry_budget(row)
+        if entry_budget is not None and entry_budget > 0:
+            row["pnl_pct"] = realized / entry_budget * 100.0
+
+
+def _enrich_row_from_recent_close(client: OandaClient, row: dict[str, object], trade_id: str) -> None:
+    if not trade_id or not hasattr(client, "recent_trade_close"):
+        return
+    try:
+        close = client.recent_trade_close(trade_id)
+    except Exception as exc:
+        row["broker_close_lookup_error"] = str(exc)[:200]
+        return
+    if isinstance(close, dict):
+        _enrich_row_from_close(row, close)
+
+
 def _format_position_lines(row: dict[str, object]) -> list[str]:
     side = str(row.get("side") or "?").upper()
     side_icon = "🟢" if side == "LONG" else "🔴"
@@ -629,6 +696,11 @@ def _sync_open_position_rows(config: CommodityConfig, client: OandaClient, state
             if (order_id and order_id in live_trade_ids) or (not order_id and instrument in open_instruments):
                 continue
             if instrument:
+                closed_at = datetime.now(timezone.utc).isoformat()
+                row["closed_at"] = closed_at
+                row["sync_reason"] = "not_in_oanda_open_positions"
+                row.setdefault("exit_reason", "broker_reconciliation")
+                _enrich_row_from_recent_close(client, row, order_id)
                 closed_rows.append(row)
         rows = reconciled_rows
         state["open_positions"] = rows
@@ -674,15 +746,24 @@ def _format_broker_close_message(row: dict[str, object]) -> str:
     dir_arrow = "⬆️" if direction == "LONG" else "⬇️"
     strategy = _pretty_strategy(str(row.get("strategy") or "LIVE"))
     held_min = _held_minutes(row)
-    return "\n".join(
-        [
-            f"🔄 <b>{_html(strategy)} Closed at broker</b> | {_html(row.get('symbol') or '?')} {dir_arrow}",
-            f"Instrument: {_html(row.get('instrument') or '?')}",
-            f"Entry: {_format_price(row.get('entry_price'))} → Exit: broker reported closed",
-            "P&L: unavailable from open-position sync",
-            f"Reason: OANDA position no longer open | Held: {held_min:.0f}min",
-        ]
-    )
+    exit_price = row.get("exit_price")
+    pnl_amount = row.get("realized_pl")
+    pnl_pct = row.get("pnl_pct")
+    pnl_text = "unavailable from broker close lookup"
+    if _float_or_none(pnl_amount) is not None:
+        pnl_text = f"{_format_signed_money(pnl_amount)} ({_format_signed_percent(pnl_pct)})"
+    reason = _human_close_reason(row.get("broker_close_reason") or row.get("exit_reason") or row.get("sync_reason"))
+    exit_text = _format_price(exit_price) if _float_or_none(exit_price) is not None else "broker reported closed"
+    lines = [
+        f"🔄 <b>{_html(strategy)} Closed at broker</b> | {_html(row.get('symbol') or '?')} {dir_arrow}",
+        f"Instrument: {_html(row.get('instrument') or '?')}",
+        f"Entry: {_format_price(row.get('entry_price'))} → Exit: {exit_text}",
+        f"P&L: {pnl_text}",
+        f"Reason: {reason} | Held: {held_min:.0f}min",
+    ]
+    if _close_needs_reentry_cooldown(row):
+        lines.append("Next entry: paused for this symbol after broker sync to avoid immediate churn.")
+    return "\n".join(lines)
 
 
 def _send_trade_lifecycle_alerts(notifier: TelegramNotifier, live_orders: list[dict[str, object]], closed_positions: list[dict[str, object]]) -> None:
@@ -700,12 +781,64 @@ def _send_profit_lock_alerts(notifier: TelegramNotifier, updates: list[dict[str,
             notifier.send(_format_profit_lock_message(row), parse_mode="HTML")
 
 
+def _cooldowns(state: dict[str, Any]) -> dict[str, dict[str, object]]:
+    value = state.get("reentry_cooldowns")
+    if not isinstance(value, dict):
+        value = {}
+        state["reentry_cooldowns"] = value
+    return value  # type: ignore[return-value]
+
+
+def _close_needs_reentry_cooldown(row: dict[str, object]) -> bool:
+    reason = str(row.get("broker_close_reason") or row.get("exit_reason") or "").strip().lower()
+    realized_pl = _float_or_none(row.get("realized_pl"))
+    if realized_pl is None:
+        return True
+    if realized_pl <= 0.0:
+        return True
+    return reason in {"stop_loss_order", "market_order", "trade_close", "broker_reconciliation", "not_in_oanda_open_positions"}
+
+
+def _record_reentry_cooldowns(config: CommodityConfig, state: dict[str, Any], closed_positions: list[dict[str, object]], now: datetime) -> None:
+    if config.broker_reentry_cooldown_minutes <= 0:
+        return
+    cooldowns = _cooldowns(state)
+    expires_at = (now + timedelta(minutes=config.broker_reentry_cooldown_minutes)).isoformat()
+    for row in closed_positions:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or not _close_needs_reentry_cooldown(row):
+            continue
+        cooldowns[symbol] = {
+            "until": expires_at,
+            "reason": row.get("broker_close_reason") or row.get("exit_reason") or "broker_reconciliation",
+            "side": row.get("side"),
+            "order_id": row.get("order_id"),
+            "closed_at": row.get("closed_at") or now.isoformat(),
+        }
+
+
+def _active_reentry_cooldown(state: dict[str, Any], symbol: str, now: datetime) -> dict[str, object] | None:
+    cooldowns = _cooldowns(state)
+    active = cooldowns.get(symbol.upper())
+    if not isinstance(active, dict):
+        return None
+    until = _coerce_time(active.get("until"))
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    if until <= now:
+        cooldowns.pop(symbol.upper(), None)
+        return None
+    return active
+
+
 def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     if config.paper_trade or not config.live_trading_enabled:
         state.setdefault("last_closed_positions", [])
         return [], []
     rows, open_instruments, errors, closed_positions = _sync_open_position_rows(config, client, state)
     state["last_closed_positions"] = closed_positions
+    now = datetime.now(timezone.utc)
+    _record_reentry_cooldowns(config, state, closed_positions, now)
     profit_updates, profit_errors = _apply_profit_protection(config, client, state)
     errors.extend(profit_errors)
     if profit_updates:
@@ -736,6 +869,10 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             break
         if signal.symbol.upper() in disabled:
             errors.append({"symbol": signal.symbol, "stage": "filter", "reason": "symbol_disabled"})
+            continue
+        cooldown = _active_reentry_cooldown(state, signal.symbol, now)
+        if cooldown is not None:
+            errors.append({"symbol": signal.symbol, "stage": "cooldown", "reason": "recent_broker_close_cooldown", "until": cooldown.get("until")})
             continue
         if str(signal.metadata.get("data_provider") or "") != "oanda":
             continue
