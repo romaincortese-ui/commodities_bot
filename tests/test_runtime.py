@@ -356,8 +356,9 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(parse_mode, "HTML")
         self.assertIn("<b>TRADE OPENED</b>", message)
         self.assertIn("🟢 WTI LONG", message)
-        self.assertIn("Entry Budget:", message)
-        self.assertIn("P&L: +0.00%", message)
+        self.assertIn("Budget:", message)
+        self.assertIn("P&L: +£0.00 (+0.00% of budget)", message)
+        self.assertIn("Risk@SL:", message)
 
     def test_profit_protection_closes_after_peak_pullback(self) -> None:
         config = replace(_live_config(), profit_lock_trigger_pct=15.0, profit_lock_pullback_pct=2.0)

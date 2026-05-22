@@ -128,6 +128,18 @@ def _position_pnl_pct(row: dict[str, object]) -> float | None:
     return unrealized_pl / entry_budget * 100.0
 
 
+def _position_stop_risk(row: dict[str, object]) -> float | None:
+    risk_amount = _float_or_none(row.get("risk_amount"))
+    if risk_amount is not None and risk_amount > 0:
+        return risk_amount
+    entry_price = _float_or_none(row.get("entry_price"))
+    sl_price = _float_or_none(row.get("sl_price"))
+    units = _float_or_none(row.get("units"))
+    if entry_price is None or sl_price is None or units is None or units <= 0:
+        return None
+    return abs(entry_price - sl_price) * units
+
+
 def _session_pnl(rows: list[object]) -> tuple[float, float]:
     total_entry_budget = 0.0
     total_pnl = 0.0
@@ -570,12 +582,12 @@ def _format_position_lines(row: dict[str, object]) -> list[str]:
     entry_budget = _position_entry_budget(row)
     unrealized_pl = _position_unrealized_pl(row)
     pnl_pct = _position_pnl_pct(row)
-    current_value = _position_current_value(row)
+    stop_risk = _position_stop_risk(row)
     return [
         (
             f"{side_icon} {_html(row.get('symbol') or '?')} {side} | "
-            f"Entry Budget: {_format_money(entry_budget)} | P&L: {_format_signed_percent(pnl_pct)} | "
-            f"Current value: {_format_money(current_value)}"
+            f"Budget: {_format_money(entry_budget)} | P&L: {_format_signed_money(unrealized_pl)} ({_format_signed_percent(pnl_pct)} of budget) | "
+            f"SL: {_format_price(row.get('sl_price'))} | Risk@SL: {_format_money(stop_risk)}"
         ),
     ]
 
@@ -751,7 +763,7 @@ def _format_broker_close_message(row: dict[str, object]) -> str:
     pnl_pct = row.get("pnl_pct")
     pnl_text = "unavailable from broker close lookup"
     if _float_or_none(pnl_amount) is not None:
-        pnl_text = f"{_format_signed_money(pnl_amount)} ({_format_signed_percent(pnl_pct)})"
+        pnl_text = f"{_format_signed_money(pnl_amount)} ({_format_signed_percent(pnl_pct)} of budget)"
     reason = _human_close_reason(row.get("broker_close_reason") or row.get("exit_reason") or row.get("sync_reason"))
     exit_text = _format_price(exit_price) if _float_or_none(exit_price) is not None else "broker reported closed"
     lines = [
