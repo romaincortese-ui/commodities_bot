@@ -28,7 +28,7 @@ def risk_pct_for_signal(signal: CommoditySignal, config: CommodityConfig) -> flo
     if signal.event_risk == "HIGH":
         quality_mult *= 0.50
     pct = min(base * quality_mult, config.bucket_cap(signal.bucket) * 0.45)
-    return pct * max(0.0, _env_float("RISK_AMOUNT_MULTIPLIER", 1.35))
+    return pct * max(0.0, _env_float("RISK_AMOUNT_MULTIPLIER", 1.7))
 
 
 
@@ -73,7 +73,7 @@ def position_from_signal(signal: CommoditySignal, equity: float, config: Commodi
         risk_amount = max(risk_amount, min(risk_floor, equity * 0.5))
     stop_distance = max(abs(signal.price - signal.sl_price), signal.price * 0.002)
     units = risk_amount / stop_distance
-    notional_cap_mult = max(0.1, _env_float("NOTIONAL_CAP_MULT", 1.25))
+    notional_cap_mult = max(0.1, _env_float("NOTIONAL_CAP_MULT", 2.0))
     notional_cap = equity * notional_cap_mult / max(signal.price, 0.0001)
     units = min(units, notional_cap)
     return CommodityPosition(
