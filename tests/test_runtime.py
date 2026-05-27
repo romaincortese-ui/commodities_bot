@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from commoditiesbot.config import CommodityConfig
 from commoditiesbot.models import CommoditySignal
-from commoditiesbot.runtime import _apply_profit_protection, _execute_live_orders, _format_boot_message, _format_scan_message, _poll_telegram_commands, _send_trade_lifecycle_alerts, _should_send_heartbeat
+from commoditiesbot.runtime import _apply_no_progress_loss_exit, _apply_profit_protection, _execute_live_orders, _format_boot_message, _format_scan_message, _poll_telegram_commands, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
@@ -19,13 +19,19 @@ class FakeOandaClient:
         self.recent_close: dict[str, object] | None = None
         self.bid = 79.99
         self.ask = 80.0
+        self.nav = 10000.0
+        self.available_balance = 9876.54
+        self.margin_rate = 0.05
         self.order_response: dict[str, object] = {"orderFillTransaction": {"id": "fill-1", "price": "80.125", "tradeOpened": {"tradeID": "trade-1"}}}
 
     def account_nav(self) -> float:
-        return 10000.0
+        return self.nav
 
     def account_available_balance(self) -> float:
-        return 9876.54
+        return self.available_balance
+
+    def instrument_margin_rate(self, instrument: str) -> float:
+        return self.margin_rate
 
     def open_positions(self) -> set[str]:
         return set(self.open_position_symbols)
@@ -311,6 +317,31 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(state["open_positions"][0]["order_id"], "trade-1")
         self.assertEqual(state["open_positions"][0]["entry_price"], 80.125)
 
+    def test_live_entry_budget_target_sizes_small_account_to_half_nav(self) -> None:
+        config = replace(
+            _live_config(),
+            max_total_risk_pct=0.50,
+            energy_bucket_risk_pct=0.50,
+            entry_budget_min=20.0,
+            entry_budget_target_pct=0.50,
+            entry_budget_max_pct=0.50,
+        )
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        client.nav = 50.0
+        client.available_balance = 50.0
+        client.margin_rate = 0.05
+
+        orders, errors = _execute_live_orders([signal], config, client, state)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(client.orders[0]["units"], 6)
+        self.assertAlmostEqual(float(orders[0]["entry_budget"]), 24.0, places=2)
+        self.assertAlmostEqual(float(orders[0]["risk_amount"]), 12.0, places=2)
+        self.assertAlmostEqual(float(state["open_positions"][0]["entry_budget"]), 24.0, places=2)
+
     def test_live_config_requires_oanda_fill_before_recording_order(self) -> None:
         config = _live_config()
         signal = _oanda_signal()
@@ -442,6 +473,44 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(updates, [])
         self.assertEqual(client.closed_trades, [])
         self.assertAlmostEqual(float(state["open_positions"][0]["metadata"]["peak_pnl_pct"]), 39.0, places=4)
+
+    def test_no_progress_loss_exit_closes_aged_trade_without_mfe(self) -> None:
+        config = replace(
+            _live_config(),
+            no_progress_exit_enabled=True,
+            no_progress_min_bars=3,
+            no_progress_min_peak_r=0.25,
+            no_progress_loss_r=0.45,
+        )
+        now = datetime.now(timezone.utc)
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "symbol": "WTI",
+                    "instrument": "WTICO_USD",
+                    "side": "LONG",
+                    "entry_price": 80.0,
+                    "units": 10.0,
+                    "sl_price": 75.0,
+                    "entry_budget": 100.0,
+                    "risk_amount": 50.0,
+                    "unrealized_pl": -25.0,
+                    "order_id": "trade-1",
+                    "opened_at": (now - timedelta(days=4)).isoformat(),
+                    "metadata": {"no_progress_peak_r": 0.10},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+
+        updates, errors = _apply_no_progress_loss_exit(config, client, state, now)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(client.closed_trades, ["trade-1"])
+        self.assertEqual(state["open_positions"], [])
+        self.assertEqual(updates[0]["exit_reason"], "no_progress_loss_exit")
+        self.assertAlmostEqual(float(updates[0]["no_progress_current_r"]), -0.5, places=4)
 
     def test_profit_protection_does_not_seed_negative_peak(self) -> None:
         config = replace(_live_config(), profit_lock_trigger_pct=3.0, profit_lock_pullback_pct=1.5)

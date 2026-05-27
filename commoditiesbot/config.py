@@ -142,6 +142,14 @@ class CommodityConfig:
     profit_lock_enabled: bool
     profit_lock_trigger_pct: float
     profit_lock_pullback_pct: float
+    entry_budget_min: float
+    entry_budget_target_pct: float
+    entry_budget_max_pct: float
+    entry_budget_margin_rate: float
+    no_progress_exit_enabled: bool
+    no_progress_min_bars: int
+    no_progress_min_peak_r: float
+    no_progress_loss_r: float
     disabled_symbols: tuple[str, ...]
     broker_reentry_cooldown_minutes: int
     open_drawdown_halt_pct: float
@@ -190,6 +198,14 @@ class CommodityConfig:
             profit_lock_enabled=_bool("PROFIT_LOCK_ENABLED", True),
             profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 3.0),
             profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 1.5),
+            entry_budget_min=max(0.0, _float("COMMODITIES_MIN_ENTRY_BUDGET", 0.0)),
+            entry_budget_target_pct=min(1.0, max(0.0, _float("COMMODITIES_ENTRY_BUDGET_TARGET_PCT", 0.0))),
+            entry_budget_max_pct=min(1.0, max(0.0, _float("COMMODITIES_MAX_ENTRY_BUDGET_PCT", 0.50))),
+            entry_budget_margin_rate=max(0.001, _float("COMMODITIES_ENTRY_BUDGET_MARGIN_RATE", 0.05)),
+            no_progress_exit_enabled=_bool("COMMODITIES_NO_PROGRESS_EXIT_ENABLED", True),
+            no_progress_min_bars=_int("COMMODITIES_NO_PROGRESS_MIN_BARS", 3),
+            no_progress_min_peak_r=_float("COMMODITIES_NO_PROGRESS_MIN_PEAK_R", 0.25),
+            no_progress_loss_r=_float("COMMODITIES_NO_PROGRESS_LOSS_R", 0.45),
             disabled_symbols=_csv("DISABLED_SYMBOLS", ()),
             broker_reentry_cooldown_minutes=max(0, _int("COMMODITIES_BROKER_REENTRY_COOLDOWN_MINUTES", 360)),
             open_drawdown_halt_pct=_float("OPEN_DRAWDOWN_HALT_PCT", 0.0),

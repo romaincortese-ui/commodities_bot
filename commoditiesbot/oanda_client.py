@@ -13,7 +13,7 @@ from commoditiesbot.models import Candle
 class OandaClient:
     def __init__(self, config: CommodityConfig) -> None:
         self.config = config
-        self._instrument_details_cache: dict[str, dict[str, int]] | None = None
+        self._instrument_details_cache: dict[str, dict[str, float]] | None = None
 
     def _request(self, method: str, path: str, payload: dict[str, object] | None = None) -> dict[str, object]:
         if not self.config.has_oanda_credentials:
@@ -52,12 +52,12 @@ class OandaClient:
     def tradeable_instruments(self) -> list[str]:
         return list(self._instrument_details().keys())
 
-    def _instrument_details(self) -> dict[str, dict[str, int]]:
+    def _instrument_details(self) -> dict[str, dict[str, float]]:
         if self._instrument_details_cache is not None:
             return self._instrument_details_cache
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/instruments")
         instruments = payload.get("instruments", [])
-        details: dict[str, dict[str, int]] = {}
+        details: dict[str, dict[str, float]] = {}
         if not isinstance(instruments, list):
             self._instrument_details_cache = details
             return details
@@ -68,17 +68,23 @@ class OandaClient:
             details[name] = {
                 "displayPrecision": _int_or_default(item.get("displayPrecision"), 5),
                 "tradeUnitsPrecision": _int_or_default(item.get("tradeUnitsPrecision"), 0),
+                "marginRate": _float_or_default(item.get("marginRate"), self.config.entry_budget_margin_rate),
             }
         self._instrument_details_cache = details
         return details
 
     def _price_precision(self, instrument: str) -> int:
         details = self._instrument_details().get(instrument.upper(), {})
-        return details.get("displayPrecision", 5)
+        return int(details.get("displayPrecision", 5))
 
     def _units_precision(self, instrument: str) -> int:
         details = self._instrument_details().get(instrument.upper(), {})
-        return details.get("tradeUnitsPrecision", 0)
+        return int(details.get("tradeUnitsPrecision", 0))
+
+    def instrument_margin_rate(self, instrument: str) -> float:
+        details = self._instrument_details().get(instrument.upper(), {})
+        margin_rate = float(details.get("marginRate", self.config.entry_budget_margin_rate) or self.config.entry_budget_margin_rate)
+        return max(0.001, margin_rate)
 
     def account_summary(self) -> dict[str, object]:
         payload = self._request("GET", f"/v3/accounts/{self.config.oanda_account_id}/summary")
@@ -256,6 +262,13 @@ class OandaClient:
 def _int_or_default(value: object, default: int) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_or_default(value: object, default: float) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
 

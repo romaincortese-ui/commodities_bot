@@ -40,6 +40,10 @@ class BacktestEngine:
                 if profit_lock_exit is not None and (not should_exit or reason in {"stop_loss", "time_stop", "hold"}):
                     should_exit = True
                     exit_price, reason = profit_lock_exit
+                no_progress_exit = _evaluate_no_progress_exit(position, candle, self.config)
+                if no_progress_exit is not None and (not should_exit or reason in {"time_stop", "hold"}):
+                    should_exit = True
+                    exit_price, reason = no_progress_exit
                 if should_exit:
                     gross = (exit_price - position.entry_price) * position.units * position.direction
                     fees = (abs(position.entry_price * position.units) + abs(exit_price * position.units)) * FEE_RATE
@@ -181,6 +185,29 @@ def _evaluate_profit_lock(position: CommodityPosition, candle: Candle, config: C
     return None
 
 
+def _evaluate_no_progress_exit(position: CommodityPosition, candle: Candle, config: CommodityConfig) -> tuple[float, str] | None:
+    if not config.no_progress_exit_enabled:
+        return None
+    metadata = position.metadata if isinstance(position.metadata, dict) else {}
+    if metadata is not position.metadata:
+        position.metadata = metadata
+    favorable_price = candle.high if position.direction > 0 else candle.low
+    peak_r = _return_r(position, favorable_price)
+    previous_peak = _float_or_none(metadata.get("no_progress_peak_r"))
+    if previous_peak is None or peak_r > previous_peak:
+        previous_peak = peak_r
+        metadata["no_progress_peak_r"] = peak_r
+    if position.bars_held < max(1, int(config.no_progress_min_bars)):
+        return None
+    if previous_peak >= max(0.0, float(config.no_progress_min_peak_r)):
+        return None
+    current_r = _return_r(position, candle.close)
+    if current_r > -max(0.0, float(config.no_progress_loss_r)):
+        return None
+    metadata["no_progress_exit_r"] = current_r
+    return candle.close, "no_progress_loss_exit"
+
+
 def _net_pnl_pct(position: CommodityPosition, price: float) -> float | None:
     budget = max(float(position.risk_amount), 0.0001)
     pnl = _net_pnl(position, price)
@@ -192,6 +219,10 @@ def _net_pnl(position: CommodityPosition, price: float) -> float:
     fees = (abs(position.entry_price * position.units) + abs(price * position.units)) * FEE_RATE
     slippage = abs(price * position.units) * SLIPPAGE_RATE
     return gross - fees - slippage
+
+
+def _return_r(position: CommodityPosition, price: float) -> float:
+    return _net_pnl(position, price) / max(float(position.risk_amount), 0.0001)
 
 
 def _price_for_net_pnl_pct(position: CommodityPosition, pnl_pct: float) -> float | None:

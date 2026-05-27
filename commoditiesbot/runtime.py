@@ -140,6 +140,14 @@ def _position_stop_risk(row: dict[str, object]) -> float | None:
     return abs(entry_price - sl_price) * units
 
 
+def _position_unrealized_r(row: dict[str, object]) -> float | None:
+    unrealized_pl = _position_unrealized_pl(row)
+    risk_amount = _position_stop_risk(row)
+    if unrealized_pl is None or risk_amount is None or risk_amount <= 0:
+        return None
+    return unrealized_pl / risk_amount
+
+
 def _session_pnl(rows: list[object]) -> tuple[float, float]:
     total_entry_budget = 0.0
     total_pnl = 0.0
@@ -411,6 +419,63 @@ def _account_available_balance(config: CommodityConfig, client: OandaClient, sta
         return equity if equity is not None else config.backtest_initial_balance
 
 
+def _target_entry_budget(config: CommodityConfig, equity: float, available_balance: float) -> float | None:
+    if equity <= 0:
+        return None
+    max_budget = equity * max(0.0, min(1.0, config.entry_budget_max_pct))
+    if available_balance > 0:
+        max_budget = min(max_budget, available_balance)
+    if max_budget <= 0:
+        return None
+    target = equity * max(0.0, min(1.0, config.entry_budget_target_pct))
+    if config.entry_budget_min > 0:
+        target = max(target, config.entry_budget_min)
+    if target <= 0:
+        return None
+    return min(target, max_budget)
+
+
+def _instrument_margin_rate(config: CommodityConfig, client: OandaClient, instrument: str) -> float:
+    fetcher = getattr(client, "instrument_margin_rate", None)
+    if callable(fetcher):
+        try:
+            return max(0.001, float(fetcher(instrument)))
+        except (RuntimeError, TypeError, ValueError):
+            pass
+    return max(0.001, float(config.entry_budget_margin_rate))
+
+
+def _refresh_position_sizing(position: CommodityPosition, margin_rate: float | None = None) -> None:
+    stop_distance = max(abs(position.entry_price - position.sl_price), position.entry_price * 0.002)
+    position.risk_amount = stop_distance * abs(position.units)
+    if margin_rate is not None and margin_rate > 0:
+        estimated_budget = abs(position.units) * position.entry_price * margin_rate
+        position.metadata["estimated_entry_budget"] = estimated_budget
+        position.metadata["estimated_margin_rate"] = margin_rate
+
+
+def _resize_position_to_entry_budget(
+    position: CommodityPosition,
+    *,
+    config: CommodityConfig,
+    client: OandaClient,
+    instrument: str,
+    equity: float,
+    available_balance: float,
+) -> float | None:
+    target_budget = _target_entry_budget(config, equity, available_balance)
+    if target_budget is None:
+        return None
+    margin_rate = _instrument_margin_rate(config, client, instrument)
+    budget_units = target_budget / max(position.entry_price * margin_rate, 0.0001)
+    if budget_units <= 0:
+        return margin_rate
+    position.units = budget_units
+    position.metadata["target_entry_budget"] = target_budget
+    _refresh_position_sizing(position, margin_rate)
+    return margin_rate
+
+
 def _position_from_state(row: dict[str, object]) -> CommodityPosition | None:
     try:
         symbol = str(row.get("symbol") or "").upper()
@@ -635,6 +700,20 @@ def _update_peak_pnl(row: dict[str, object], now: datetime) -> tuple[float | Non
     return pnl_pct, peak_pnl_pct
 
 
+def _update_no_progress_peak_r(row: dict[str, object], now: datetime) -> tuple[float | None, float | None]:
+    current_r = _position_unrealized_r(row)
+    if current_r is None:
+        return None, None
+    metadata = _metadata_dict(row)
+    peak_r = _float_or_none(metadata.get("no_progress_peak_r"))
+    if peak_r is None or current_r > peak_r:
+        peak_r = current_r
+        metadata["no_progress_peak_r"] = peak_r
+        metadata["no_progress_peak_seen_at"] = now.isoformat()
+        row["metadata"] = _json_safe(metadata)
+    return current_r, peak_r
+
+
 def _apply_profit_protection(config: CommodityConfig, client: OandaClient, state: dict[str, Any]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     updates: list[dict[str, object]] = []
     errors: list[dict[str, object]] = []
@@ -672,6 +751,57 @@ def _apply_profit_protection(config: CommodityConfig, client: OandaClient, state
     state["open_positions"] = kept_rows
     state["last_profit_protection_updates"] = updates
     state["last_profit_protection_errors"] = errors[:5]
+    return updates, errors
+
+
+def _apply_no_progress_loss_exit(config: CommodityConfig, client: OandaClient, state: dict[str, Any], now: datetime | None = None) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    updates: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    if not config.no_progress_exit_enabled or config.paper_trade or not config.live_trading_enabled or not config.has_oanda_credentials:
+        state["last_no_progress_exit_updates"] = []
+        return updates, errors
+    rows = _state_position_rows(state)
+    kept_rows: list[dict[str, object]] = []
+    now = now or datetime.now(timezone.utc)
+    min_age = timedelta(days=max(1, int(config.no_progress_min_bars)))
+    min_peak_r = max(0.0, float(config.no_progress_min_peak_r))
+    loss_r = max(0.0, float(config.no_progress_loss_r))
+    for row in rows:
+        instrument = str(row.get("instrument") or "").strip().upper()
+        trade_id = str(row.get("order_id") or "").strip()
+        if not instrument or not trade_id:
+            kept_rows.append(row)
+            continue
+        opened_at = _coerce_time(row.get("opened_at"))
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+        opened_at = opened_at.astimezone(timezone.utc)
+        if now - opened_at < min_age:
+            kept_rows.append(row)
+            continue
+        current_r, peak_r = _update_no_progress_peak_r(row, now)
+        if current_r is None or peak_r is None:
+            kept_rows.append(row)
+            continue
+        if peak_r >= min_peak_r or current_r > -loss_r:
+            kept_rows.append(row)
+            continue
+        try:
+            close_response = client.close_trade(trade_id)
+            if isinstance(close_response, dict):
+                _enrich_row_from_close(row, close_response)
+        except RuntimeError as exc:
+            errors.append({"symbol": row.get("symbol") or instrument, "instrument": instrument, "stage": "no_progress_close", "error": str(exc)})
+            kept_rows.append(row)
+            continue
+        row["closed_at"] = now.isoformat()
+        row["exit_reason"] = "no_progress_loss_exit"
+        row["no_progress_peak_r"] = peak_r
+        row["no_progress_current_r"] = current_r
+        updates.append(dict(row))
+    state["open_positions"] = kept_rows
+    state["last_no_progress_exit_updates"] = updates
+    state["last_no_progress_exit_errors"] = errors[:5]
     return updates, errors
 
 
@@ -723,6 +853,7 @@ def _sync_open_position_rows(config: CommodityConfig, client: OandaClient, state
 
 
 def _position_row(position: CommodityPosition, instrument: str, signed_units: float) -> dict[str, object]:
+    entry_budget = _float_or_none(position.metadata.get("estimated_entry_budget")) or position.risk_amount
     return {
         "symbol": position.symbol,
         "instrument": instrument,
@@ -735,9 +866,9 @@ def _position_row(position: CommodityPosition, instrument: str, signed_units: fl
         "tp_price": position.tp_price,
         "opened_at": position.opened_at.isoformat(),
         "risk_amount": position.risk_amount,
-        "entry_budget": position.risk_amount,
+        "entry_budget": entry_budget,
         "unrealized_pl": 0.0,
-        "current_value": position.risk_amount,
+        "current_value": entry_budget,
         "bucket": position.bucket,
         "order_id": position.order_id,
         "metadata": _json_safe(position.metadata),
@@ -855,8 +986,16 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
     errors.extend(profit_errors)
     if profit_updates:
         rows = _state_position_rows(state)
+    no_progress_updates, no_progress_errors = _apply_no_progress_loss_exit(config, client, state, now)
+    errors.extend(no_progress_errors)
+    if no_progress_updates:
+        closed_positions.extend(no_progress_updates)
+        state["last_closed_positions"] = closed_positions
+        _record_reentry_cooldowns(config, state, no_progress_updates, now)
+        rows = _state_position_rows(state)
     positions = [position for position in (_position_from_state(row) for row in rows) if position is not None]
     equity = _account_equity(config, client, state)
+    available_balance = _account_available_balance(config, client, state, equity)
     orders: list[dict[str, object]] = []
     market_statuses: dict[str, tuple[bool, str]] = {}
     # Open-position drawdown halt: skip new entries if unrealized P&L vs equity exceeds threshold.
@@ -921,10 +1060,20 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             errors.append({"symbol": signal.symbol, "instrument": instrument, "stage": "pricing", "error": str(exc)})
             continue
         _recenter_brackets(position, signal, bid, ask)
+        margin_rate = _resize_position_to_entry_budget(
+            position,
+            config=config,
+            client=client,
+            instrument=instrument,
+            equity=equity,
+            available_balance=available_balance,
+        )
         signed_units = _signed_oanda_units(position.units, signal.side)
         if signed_units == 0:
             errors.append({"symbol": signal.symbol, "stage": "units", "reason": "position_size_below_one_oanda_unit"})
             continue
+        position.units = abs(float(signed_units))
+        _refresh_position_sizing(position, margin_rate)
         try:
             response = client.place_market_order(
                 instrument,
@@ -1110,6 +1259,10 @@ def _handle_status_command(config: CommodityConfig, client: OandaClient, state: 
     sync_errors.extend(profit_errors)
     if profit_updates:
         _send_profit_lock_alerts(notifier, profit_updates)
+    no_progress_updates, no_progress_errors = _apply_no_progress_loss_exit(config, client, state)
+    sync_errors.extend(no_progress_errors)
+    if no_progress_updates:
+        _send_trade_lifecycle_alerts(notifier, [], no_progress_updates)
     notifier.send(_format_status_message(config, state, equity, sync_errors), parse_mode="HTML")
 
 
@@ -1125,6 +1278,10 @@ def _handle_positions_command(config: CommodityConfig, client: OandaClient, stat
     sync_errors.extend(profit_errors)
     if profit_updates:
         _send_profit_lock_alerts(notifier, profit_updates)
+    no_progress_updates, no_progress_errors = _apply_no_progress_loss_exit(config, client, state)
+    sync_errors.extend(no_progress_errors)
+    if no_progress_updates:
+        _send_trade_lifecycle_alerts(notifier, [], no_progress_updates)
     if sync_errors:
         state["last_position_sync_errors"] = sync_errors[:5]
     notifier.send(_format_positions_message(config, state), parse_mode="HTML")
@@ -1315,12 +1472,16 @@ def run_bot() -> None:
         boot_profit_updates, boot_profit_errors = _apply_profit_protection(config, client, boot_state)
         if boot_profit_errors:
             boot_state["last_boot_profit_lock_errors"] = boot_profit_errors[:5]
+        boot_no_progress_updates, boot_no_progress_errors = _apply_no_progress_loss_exit(config, client, boot_state)
+        if boot_no_progress_errors:
+            boot_state["last_boot_no_progress_exit_errors"] = boot_no_progress_errors[:5]
         state_store.save(boot_state)
     notifier.send(_format_boot_message(config, boot_state), parse_mode="HTML")
     if boot_closed_positions:
         _send_trade_lifecycle_alerts(notifier, [], boot_closed_positions)
     if config.has_oanda_credentials:
         _send_profit_lock_alerts(notifier, boot_state.get("last_profit_protection_updates", []))
+        _send_trade_lifecycle_alerts(notifier, [], [row for row in boot_state.get("last_no_progress_exit_updates", []) if isinstance(row, dict)])
 
     while True:
         _poll_telegram_commands(config, client, state_store, notifier)

@@ -67,4 +67,4 @@ Live OANDA positions track their best unrealized P&L in runtime state after ever
 
 Broker-sync closures are reconciled against recent OANDA close transactions when available, so Telegram can show the broker reason and realized P&L instead of only saying the position is no longer open. If OANDA cannot confirm a profitable take-profit close, the bot pauses fresh entries for that symbol for `COMMODITIES_BROKER_REENTRY_COOLDOWN_MINUTES` minutes to avoid closing and reopening the same setup in the same scan.
 
-The default risk sizing multiplier is `RISK_AMOUNT_MULTIPLIER=1.35`; portfolio and bucket caps still apply before any live order is sent.
+The default risk sizing multiplier is `RISK_AMOUNT_MULTIPLIER=1.35`; portfolio and bucket caps still apply before any live order is sent. For small live accounts, use `COMMODITIES_MIN_ENTRY_BUDGET=20`, `COMMODITIES_ENTRY_BUDGET_TARGET_PCT=0.50`, and `COMMODITIES_MAX_ENTRY_BUDGET_PCT=0.50` to size each new OANDA order toward 50% of NAV/available margin instead of dust-sized entries. Raise `MAX_TOTAL_RISK_PCT` and the bucket caps alongside that setting, otherwise the first larger trade can correctly block the next one.

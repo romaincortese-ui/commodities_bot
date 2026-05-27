@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from commoditiesbot.backtest import run_backtest
 from commoditiesbot.backtest.data import FixtureMarketDataProvider
-from commoditiesbot.backtest.engine import BacktestEngine
+from commoditiesbot.backtest.engine import BacktestEngine, _evaluate_no_progress_exit
 from commoditiesbot.config import CommodityConfig
+from commoditiesbot.models import Candle, CommodityPosition
 
 
 class BacktestTests(unittest.TestCase):
@@ -56,6 +58,33 @@ class BacktestTests(unittest.TestCase):
 
         with patch.object(run_backtest, "BacktestEngine", FakeBacktestEngine), patch.object(run_backtest, "write_report"):
             self.assertEqual(run_backtest.main(), 0)
+
+    def test_no_progress_exit_cuts_trade_that_never_launches(self) -> None:
+        env = dict(os.environ)
+        env["COMMODITIES_NO_PROGRESS_EXIT_ENABLED"] = "true"
+        env["COMMODITIES_NO_PROGRESS_MIN_BARS"] = "3"
+        env["COMMODITIES_NO_PROGRESS_MIN_PEAK_R"] = "0.25"
+        env["COMMODITIES_NO_PROGRESS_LOSS_R"] = "0.45"
+        with patch.dict(os.environ, env, clear=True):
+            config = CommodityConfig.from_env()
+        position = CommodityPosition(
+            symbol="WTI",
+            side="LONG",
+            strategy="CRUDE_INVENTORY_TREND",
+            entry_price=80.0,
+            units=10.0,
+            sl_price=75.0,
+            tp_price=90.0,
+            opened_at=datetime.now(timezone.utc),
+            risk_amount=50.0,
+            bucket="ENERGY",
+            bars_held=3,
+        )
+        candle = Candle(time=datetime.now(timezone.utc), open=79.0, high=80.5, low=77.4, close=77.5, volume=1000.0)
+
+        exit_signal = _evaluate_no_progress_exit(position, candle, config)
+
+        self.assertEqual(exit_signal, (77.5, "no_progress_loss_exit"))
 
 
 if __name__ == "__main__":
