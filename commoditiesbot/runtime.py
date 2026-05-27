@@ -425,6 +425,8 @@ def _target_entry_budget(config: CommodityConfig, equity: float, available_balan
     max_budget = equity * max(0.0, min(1.0, config.entry_budget_max_pct))
     if available_balance > 0:
         max_budget = min(max_budget, available_balance)
+    if config.entry_budget_min > 0 and max_budget < config.entry_budget_min:
+        return None
     if max_budget <= 0:
         return None
     target = equity * max(0.0, min(1.0, config.entry_budget_target_pct))
@@ -474,6 +476,10 @@ def _resize_position_to_entry_budget(
     position.metadata["target_entry_budget"] = target_budget
     _refresh_position_sizing(position, margin_rate)
     return margin_rate
+
+
+def _entry_budget_mode_enabled(config: CommodityConfig) -> bool:
+    return config.entry_budget_min > 0 or config.entry_budget_target_pct > 0
 
 
 def _position_from_state(row: dict[str, object]) -> CommodityPosition | None:
@@ -1068,12 +1074,35 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             equity=equity,
             available_balance=available_balance,
         )
+        if margin_rate is None and _entry_budget_mode_enabled(config):
+            errors.append(
+                {
+                    "symbol": signal.symbol,
+                    "stage": "budget",
+                    "reason": "entry_budget_below_minimum",
+                    "min_entry_budget": round(config.entry_budget_min, 2),
+                    "available_balance": round(available_balance, 2),
+                }
+            )
+            continue
         signed_units = _signed_oanda_units(position.units, signal.side)
         if signed_units == 0:
             errors.append({"symbol": signal.symbol, "stage": "units", "reason": "position_size_below_one_oanda_unit"})
             continue
         position.units = abs(float(signed_units))
         _refresh_position_sizing(position, margin_rate)
+        estimated_entry_budget = _float_or_none(position.metadata.get("estimated_entry_budget"))
+        if config.entry_budget_min > 0 and estimated_entry_budget is not None and estimated_entry_budget < config.entry_budget_min:
+            errors.append(
+                {
+                    "symbol": signal.symbol,
+                    "stage": "budget",
+                    "reason": "entry_budget_below_minimum_after_rounding",
+                    "estimated_entry_budget": round(estimated_entry_budget, 2),
+                    "min_entry_budget": round(config.entry_budget_min, 2),
+                }
+            )
+            continue
         try:
             response = client.place_market_order(
                 instrument,

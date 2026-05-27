@@ -342,6 +342,29 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertAlmostEqual(float(orders[0]["risk_amount"]), 12.0, places=2)
         self.assertAlmostEqual(float(state["open_positions"][0]["entry_budget"]), 24.0, places=2)
 
+    def test_live_entry_budget_target_skips_when_available_below_minimum(self) -> None:
+        config = replace(
+            _live_config(),
+            max_total_risk_pct=0.50,
+            energy_bucket_risk_pct=0.50,
+            entry_budget_min=20.0,
+            entry_budget_target_pct=0.50,
+            entry_budget_max_pct=0.50,
+        )
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        client.nav = 50.0
+        client.available_balance = 12.0
+        client.margin_rate = 0.05
+
+        orders, errors = _execute_live_orders([signal], config, client, state)
+
+        self.assertEqual(orders, [])
+        self.assertEqual(client.orders, [])
+        self.assertEqual(errors[0]["stage"], "budget")
+        self.assertEqual(errors[0]["reason"], "entry_budget_below_minimum")
+
     def test_live_config_requires_oanda_fill_before_recording_order(self) -> None:
         config = _live_config()
         signal = _oanda_signal()
