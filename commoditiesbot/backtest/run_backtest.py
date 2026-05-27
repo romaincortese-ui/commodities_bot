@@ -24,6 +24,10 @@ def main() -> int:
     print(f"trades={result.total_trades} wins={result.wins} losses={result.losses} win_rate={result.win_rate:.2%}")
     print(f"pnl={result.total_pnl:.2f} return={result.return_pct:.2%} pf={result.profit_factor:.2f} max_dd={result.max_drawdown_pct:.2%}")
     print("by_bucket=" + ", ".join(f"{bucket}:{pnl:.2f}" for bucket, pnl in sorted(result.by_bucket.items())))
+    if result.total_pnl <= 0:
+        print(f"validation=failed reason=non_positive_pnl pnl={result.total_pnl:.2f}")
+        return 1
+    print("validation=passed reason=positive_pnl")
     return 0
 
 

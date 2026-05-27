@@ -35,7 +35,7 @@ class BacktestTests(unittest.TestCase):
         self.assertGreater(candidate.total_pnl, baseline.total_pnl)
         self.assertTrue(any(trade.exit_reason == "peak_pullback_profit_lock" for trade in candidate.trades))
 
-    def test_backtest_command_succeeds_when_metrics_are_negative(self) -> None:
+    def test_backtest_command_fails_when_metrics_are_negative(self) -> None:
         result = SimpleNamespace(
             data_provider="fixture",
             total_trades=3,
@@ -57,7 +57,7 @@ class BacktestTests(unittest.TestCase):
                 return result
 
         with patch.object(run_backtest, "BacktestEngine", FakeBacktestEngine), patch.object(run_backtest, "write_report"):
-            self.assertEqual(run_backtest.main(), 0)
+            self.assertEqual(run_backtest.main(), 1)
 
     def test_no_progress_exit_cuts_trade_that_never_launches(self) -> None:
         env = dict(os.environ)
