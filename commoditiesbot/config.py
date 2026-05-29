@@ -10,8 +10,6 @@ DEFAULT_UNIVERSE = (
     "WTI",
     "BRENT",
     "NATGAS",
-    "GASOLINE",
-    "HEATING_OIL",
     "CORN",
     "WHEAT",
     "SOYBEANS",
@@ -184,7 +182,7 @@ class CommodityConfig:
                 symbol: os.environ.get(f"OANDA_INSTRUMENT_{symbol}", OANDA_INSTRUMENTS.get(symbol, "")).strip().upper()
                 for symbol in DEFAULT_UNIVERSE
             },
-            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
+            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 86400),
             heartbeat_seconds=_heartbeat_seconds(),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),
@@ -203,7 +201,7 @@ class CommodityConfig:
             entry_budget_max_pct=min(1.0, max(0.0, _float("COMMODITIES_MAX_ENTRY_BUDGET_PCT", 0.50))),
             entry_budget_margin_rate=max(0.001, _float("COMMODITIES_ENTRY_BUDGET_MARGIN_RATE", 0.05)),
             no_progress_exit_enabled=_bool("COMMODITIES_NO_PROGRESS_EXIT_ENABLED", True),
-            no_progress_min_bars=_int("COMMODITIES_NO_PROGRESS_MIN_BARS", 3),
+            no_progress_min_bars=_int("COMMODITIES_NO_PROGRESS_MIN_BARS", 5),
             no_progress_min_peak_r=_float("COMMODITIES_NO_PROGRESS_MIN_PEAK_R", 0.25),
             no_progress_loss_r=_float("COMMODITIES_NO_PROGRESS_LOSS_R", 0.45),
             disabled_symbols=_csv("DISABLED_SYMBOLS", ()),
