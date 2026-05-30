@@ -10,6 +10,7 @@ from commoditiesbot.backtest.data import FixtureMarketDataProvider
 from commoditiesbot.config import CommodityConfig, SYMBOL_BUCKETS
 from commoditiesbot.models import CommodityPosition, CommoditySignal
 from commoditiesbot.oanda_client import OandaClient
+from commoditiesbot.prediction_overlay import apply_prediction_overlay, load_prediction_state_payload, prediction_size_multiplier, select_point_in_time_prediction_state
 from commoditiesbot.risk import bucket_risk_pct, can_open, open_risk_pct, position_from_signal
 from commoditiesbot.state import StateStore
 from commoditiesbot.strategies import generate_signal
@@ -1058,6 +1059,7 @@ def _execute_live_orders(signals: list[CommoditySignal], config: CommodityConfig
             errors.append(error)
             continue
         position = position_from_signal(signal, equity, config)
+        _apply_prediction_size_multiplier(position, signal.metadata)
         if position.units <= 0:
             continue
         try:
@@ -1379,8 +1381,45 @@ def _should_send_heartbeat(state: dict[str, object], now_ts: float, heartbeat_se
     return now_ts - last_sent >= max(0, heartbeat_seconds)
 
 
+def _prediction_overlay_state(config: CommodityConfig, now: datetime) -> dict[str, Any] | None:
+    if not config.prediction_overlay_enabled:
+        return None
+    payload = load_prediction_state_payload(config.prediction_overlay_state_file)
+    return select_point_in_time_prediction_state(payload, now)
+
+
+def _apply_prediction_overlay(config: CommodityConfig, signal: CommoditySignal, state: dict[str, Any] | None, now: datetime) -> CommoditySignal | None:
+    return apply_prediction_overlay(
+        signal,
+        state,
+        now,
+        enabled=config.prediction_overlay_enabled,
+        symbol=signal.symbol,
+        side=signal.side,
+        stale_seconds=config.prediction_overlay_stale_seconds,
+        fallback_mode=config.prediction_overlay_fallback_mode,
+        min_favourable_probability=config.prediction_overlay_min_favourable_probability,
+        min_posterior=config.prediction_overlay_min_posterior,
+        event_given_success=config.prediction_overlay_event_given_success,
+        kelly_base_fraction=config.prediction_overlay_kelly_base_fraction,
+        max_size_multiplier=config.prediction_overlay_max_size_multiplier,
+        score_scale=config.prediction_overlay_score_scale,
+    )
+
+
+def _apply_prediction_size_multiplier(position: CommodityPosition, metadata: dict[str, object]) -> None:
+    multiplier = prediction_size_multiplier(metadata)
+    if abs(multiplier - 1.0) <= 1e-9:
+        return
+    position.units *= multiplier
+    position.risk_amount *= multiplier
+    position.metadata["prediction_size_multiplier_applied"] = round(multiplier, 4)
+
+
 def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
+    now = datetime.now(timezone.utc)
+    prediction_state = _prediction_overlay_state(config, now)
     instrument_count = 0
     tradeable_instruments: set[str] = set()
     if config.has_oanda_credentials:
@@ -1422,6 +1461,9 @@ def run_scan(config: CommodityConfig, client: OandaClient, state_store: StateSto
             signal.metadata["data_provider"] = data_provider
             if oanda_instrument:
                 signal.metadata["oanda_instrument"] = oanda_instrument
+            signal = _apply_prediction_overlay(config, signal, prediction_state, now)
+            if signal is None:
+                continue
             signals.append(signal)
 
     signals.sort(key=lambda item: item.score, reverse=True)
