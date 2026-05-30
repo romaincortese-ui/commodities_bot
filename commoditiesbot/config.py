@@ -137,6 +137,16 @@ class CommodityConfig:
     daily_loss_halt_pct: float
     rolling_dd_throttle_pct: float
     rolling_dd_halt_pct: float
+    prediction_overlay_enabled: bool
+    prediction_overlay_state_file: Path
+    prediction_overlay_stale_seconds: int
+    prediction_overlay_fallback_mode: str
+    prediction_overlay_min_favourable_probability: float
+    prediction_overlay_min_posterior: float
+    prediction_overlay_event_given_success: float
+    prediction_overlay_kelly_base_fraction: float
+    prediction_overlay_max_size_multiplier: float
+    prediction_overlay_score_scale: float
     profit_lock_enabled: bool
     profit_lock_trigger_pct: float
     profit_lock_pullback_pct: float
@@ -193,6 +203,21 @@ class CommodityConfig:
             daily_loss_halt_pct=_float("DAILY_LOSS_HALT_PCT", 0.015),
             rolling_dd_throttle_pct=_float("ROLLING_DD_THROTTLE_PCT", 0.050),
             rolling_dd_halt_pct=_float("ROLLING_DD_HALT_PCT", 0.090),
+            prediction_overlay_enabled=_bool("COMMODITIES_PREDICTION_OVERLAY_ENABLED", False),
+            prediction_overlay_state_file=Path(
+                os.environ.get(
+                    "COMMODITIES_BACKTEST_PREDICTION_STATE_FILE",
+                    os.environ.get("COMMODITIES_PREDICTION_STATE_FILE", ""),
+                )
+            ),
+            prediction_overlay_stale_seconds=max(1, _int("COMMODITIES_PREDICTION_STALE_SECONDS", 60)),
+            prediction_overlay_fallback_mode=os.environ.get("COMMODITIES_PREDICTION_FALLBACK_MODE", "neutral").strip().lower(),
+            prediction_overlay_min_favourable_probability=max(0.0, min(1.0, _float("COMMODITIES_PREDICTION_MIN_FAVOURABLE_PROBABILITY", 0.50))),
+            prediction_overlay_min_posterior=max(0.0, min(1.0, _float("COMMODITIES_PREDICTION_MIN_POSTERIOR", 0.50))),
+            prediction_overlay_event_given_success=max(0.0, min(1.0, _float("COMMODITIES_PREDICTION_EVENT_GIVEN_SUCCESS", 0.60))),
+            prediction_overlay_kelly_base_fraction=max(0.001, _float("COMMODITIES_PREDICTION_KELLY_BASE_FRACTION", 0.04)),
+            prediction_overlay_max_size_multiplier=max(0.0, _float("COMMODITIES_PREDICTION_MAX_SIZE_MULTIPLIER", 1.0)),
+            prediction_overlay_score_scale=max(0.0, _float("COMMODITIES_PREDICTION_SCORE_SCALE", 20.0)),
             profit_lock_enabled=_bool("PROFIT_LOCK_ENABLED", True),
             profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 3.0),
             profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 1.5),
