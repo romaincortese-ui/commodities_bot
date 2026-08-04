@@ -68,9 +68,21 @@ def position_from_signal(signal: CommoditySignal, equity: float, config: Commodi
     # behavior is unchanged when the var is not set. When set, ensures we don't
     # open dust trades on small balances (e.g. a £51 NAV would otherwise size at
     # ~£0.20 per ENERGY signal). Capped at 50% of equity for safety.
+    # The floor may never dominate the risk model. It previously capped at 50% of
+    # equity, which is not a safety cap -- it authorises risking half the account
+    # on one trade. With RISK_AMOUNT_FLOOR=12.5 on a £30 account that resolved to
+    # £12.50 = 41.7% risk per trade, and max_open_positions=2 made it 83%.
+    #
+    # That is what the live record shows: WTI -£9.36 and Brent -£9.18 opened 3.5h
+    # apart on 2026-05-29, together 59% of ALL gross losses across 61 trades.
+    #
+    # The floor's original purpose (avoid dust trades on a small balance) is
+    # legitimate, but £0.20 on a £51 account IS the correct risk. The answer to a
+    # position too small to be meaningful is to SKIP it, not to risk 60x more.
     risk_floor = max(0.0, _env_float("RISK_AMOUNT_FLOOR", 0.0))
     if risk_floor > 0.0:
-        risk_amount = max(risk_amount, min(risk_floor, equity * 0.5))
+        floor_cap_pct = max(0.0, _env_float("RISK_AMOUNT_FLOOR_MAX_PCT", 0.02))
+        risk_amount = max(risk_amount, min(risk_floor, equity * floor_cap_pct))
     stop_distance = max(abs(signal.price - signal.sl_price), signal.price * 0.002)
     units = risk_amount / stop_distance
     notional_cap_mult = max(0.1, _env_float("NOTIONAL_CAP_MULT", 2.0))
